@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Secrets — copy backend/.env.example to backend/.env instead
+.env
+
+# Expo / Metro
+.expo/
+dist/
+web-build/
+
+# Logs
+*.log
+build_log.txt
+expo-config.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
