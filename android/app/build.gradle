@@ -95,12 +95,6 @@ android {
         versionCode 1
         versionName "1.0.0"
 
-        // Google Maps API key — set MAPS_API_KEY=... in android/local.properties (git-ignored)
-        def localProps = new Properties()
-        def localPropsFile = rootProject.file('local.properties')
-        if (localPropsFile.exists()) localPropsFile.withInputStream { localProps.load(it) }
-        manifestPlaceholders = [MAPS_API_KEY: localProps.getProperty('MAPS_API_KEY', '')]
-
         buildConfigField "String", "REACT_NATIVE_RELEASE_LEVEL", "\"${findProperty('reactNativeReleaseLevel') ?: 'stable'}\""
     }
     signingConfigs {

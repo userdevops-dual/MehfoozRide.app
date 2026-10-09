@@ -7,7 +7,7 @@ import {
   View, Text, TouchableOpacity, StyleSheet,
   Alert, Modal, ScrollView,
 } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import OSMMap from '../../components/OSMMap';
 import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import { rideAPI } from '../../services/api';
@@ -41,7 +41,6 @@ export default function ActiveRideScreen({ navigation, route }) {
   const [poolFarePerPax,    setPoolFarePerPax]     = useState(ride?.farePerPassenger || 0);
 
   const { user } = useAuth();
-  const mapRef    = useRef(null);
   const prevLoc   = useRef(null);
   const startTime = useRef(null);
   const rideTimeRef = useRef(0); // latest values for socket callbacks registered once
@@ -196,9 +195,12 @@ export default function ActiveRideScreen({ navigation, route }) {
     ]);
   };
 
-  const mapRegion = myLocation
-    ? { latitude: myLocation.latitude, longitude: myLocation.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 }
-    : { latitude: 31.5204, longitude: 74.3587, latitudeDelta: 0.02, longitudeDelta: 0.02 };
+  // Map shows you and the driver; zooms to fit both once the driver's location arrives
+  const mapCenter  = myLocation || { latitude: 31.5204, longitude: 74.3587 };
+  const mapMarkers = [
+    ...(myLocation ? [{ id: 'me', ...myLocation, label: 'You', color: C.rose }] : []),
+    ...(driverLoc  ? [{ id: 'driver', ...driverLoc, label: driver?.name || 'Your Driver', emoji: '🚗' }] : []),
+  ];
 
   const SAFE_LOCATIONS = [
     { name: 'CMH Lahore (Hospital)',      addr: 'Jail Road, Lahore' },
@@ -210,14 +212,13 @@ export default function ActiveRideScreen({ navigation, route }) {
   return (
     <View style={styles.screen}>
       {/* Live Map */}
-      <MapView ref={mapRef} style={styles.map} region={mapRegion} showsUserLocation>
-        {myLocation && <Marker coordinate={myLocation} title="You" pinColor={C.rose} />}
-        {driverLoc  && (
-          <Marker coordinate={driverLoc} title={driver?.name || 'Your Driver'}>
-            <Text style={{ fontSize: 28 }}>🚗</Text>
-          </Marker>
-        )}
-      </MapView>
+      <OSMMap
+        style={styles.map}
+        center={mapCenter}
+        zoom={15}
+        markers={mapMarkers}
+        fitToContent={mapMarkers.length > 1}
+      />
 
       {/* ── FIXED OTP MODAL ─────────────────────────────────────────────────
           Passenger ONLY sees and shows this code.

@@ -10,7 +10,7 @@ import {
   View, Text, TouchableOpacity, ScrollView,
   StyleSheet, Alert, ActivityIndicator,
 } from 'react-native';
-import MapView, { Marker, Polyline } from 'react-native-maps';
+import OSMMap from '../../components/OSMMap';
 import LinearGradient from 'react-native-linear-gradient';
 import { rideAPI } from '../../services/api';
 import { emitNewRideRequest } from '../../services/socket';
@@ -121,26 +121,17 @@ export default function BookingScreen({ navigation }) {
         {/* REQ 14: Live Route Map — shows when dropoff entered */}
         {showMap ? (
           <View style={styles.mapContainer}>
-            <MapView
+            <OSMMap
               style={styles.map}
-              initialRegion={{
-                latitude:      31.5004,
-                longitude:     74.3510,
-                latitudeDelta:  0.08,
-                longitudeDelta: 0.06,
-              }}
-              scrollEnabled={false}
-              zoomEnabled={false}
-            >
-              <Marker coordinate={PICKUP_COORD}  title="Pickup"      pinColor={C.success} />
-              <Marker coordinate={DROPOFF_COORD} title="Destination" pinColor={C.rose}    />
-              <Polyline
-                coordinates={ROUTE_POINTS}
-                strokeColor={C.rose}
-                strokeWidth={4}
-                lineDashPattern={[0]}
-              />
-            </MapView>
+              interactive={false}
+              fitToContent
+              markers={[
+                { id: 'pickup',  ...PICKUP_COORD,  label: 'Pickup',      color: C.success },
+                { id: 'dropoff', ...DROPOFF_COORD, label: 'Destination', color: C.rose },
+              ]}
+              polyline={ROUTE_POINTS}
+              polylineColor={C.rose}
+            />
             {/* Route info overlay */}
             <View style={styles.routeOverlay}>
               <View style={styles.routeStat}>

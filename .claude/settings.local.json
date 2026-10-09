@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'Switch maps to OpenStreetMap \\(no API key\\); use Expo Metro config *)"
+    ]
+  }
+}
