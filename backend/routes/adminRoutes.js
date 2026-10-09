@@ -35,7 +35,7 @@ router.put('/drivers/:id/approve', async (req, res) => {
   try {
     const { backgroundNotes, criminalDeclaration } = req.body;
     const driver = await User.findById(req.params.id);
-    if (!driver) return res.status(404).json({ success: false, message: 'Driver not found' });
+    if (!driver || driver.role !== 'driver') return res.status(404).json({ success: false, message: 'Driver not found' });
 
     // ── Background check requirements ─────────────────────────────────────
     if (!driver.cnicVerified) {
@@ -140,7 +140,7 @@ router.get('/route-deviations', async (req, res) => {
 // Rides with OTP failure counts (possible fake rides)
 router.get('/fake-ride-incidents', async (req, res) => {
   try {
-    const incidents = await Ride.find({ otpFailureCount: { $gte: 1 } })
+    const incidents = await Ride.find({ $or: [{ fakeRideSuspected: true }, { otpFailureCount: { $gte: 1 } }] })
       .populate('passenger', 'name phone')
       .populate('driver', 'name phone driverDetails otpFailures otpFailureFlagged')
       .sort({ otpFailureCount: -1, createdAt: -1 });
@@ -161,7 +161,7 @@ router.get('/flagged-drivers', async (req, res) => {
 // GET /api/admin/active-rides
 router.get('/active-rides', async (req, res) => {
   try {
-    const rides = await Ride.find({ status: { $in: ['accepted','arrived','in_progress'] } })
+    const rides = await Ride.find({ status: { $in: ['accepted', 'arrived', 'otp_verified', 'in_progress'] } })
       .populate('passenger','name phone')
       .populate('driver','name phone driverDetails')
       .sort({ createdAt: -1 });
@@ -204,34 +204,6 @@ router.get('/stats', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-module.exports = router;
-
-// GET /api/admin/fake-ride-incidents — rides with fakeRideSuspected or 3+ OTP failures
-router.get('/fake-ride-incidents', async (req, res) => {
-  try {
-    const incidents = await Ride.find({
-      $or: [{ fakeRideSuspected: true }, { otpFailureCount: { $gte: 2 } }]
-    })
-      .populate('passenger', 'name phone')
-      .populate('driver', 'name phone driverDetails')
-      .sort({ createdAt: -1 });
-    res.json({ success: true, count: incidents.length, incidents });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
-
-// GET /api/admin/active-rides — all currently in-progress rides
-router.get('/active-rides', async (req, res) => {
-  try {
-    const rides = await Ride.find({
-      status: { $in: ['accepted', 'arrived', 'otp_verified', 'in_progress'] }
-    })
-      .populate('passenger', 'name phone')
-      .populate('driver', 'name phone driverDetails')
-      .sort({ createdAt: -1 });
-    res.json({ success: true, count: rides.length, rides });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
-
 // GET /api/admin/drivers/approved — all currently verified active drivers
 router.get('/drivers/approved', async (req, res) => {
   try {
@@ -241,26 +213,4 @@ router.get('/drivers/approved', async (req, res) => {
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
 });
 
-// PUT /api/admin/drivers/:id/reject-background
-router.put('/drivers/:id/reject-background', async (req, res) => {
-  try {
-    const { reason } = req.body;
-    const driver = await User.findByIdAndUpdate(req.params.id, {
-      isSuspended: true,
-      suspendReason: reason || 'Background check failed',
-      'driverDetails.backgroundCheck': 'failed',
-      'driverDetails.backgroundNotes': reason || 'Rejected by admin',
-    }, { new: true });
-    res.json({ success: true, message: 'Driver rejected', driver });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
-
-// PUT /api/admin/users/:id/unsuspend
-router.put('/users/:id/unsuspend', async (req, res) => {
-  try {
-    const user = await User.findByIdAndUpdate(req.params.id,
-      { isSuspended: false, suspendReason: '' }, { new: true }
-    );
-    res.json({ success: true, message: 'Account reinstated', user });
-  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
-});
+module.exports = router;

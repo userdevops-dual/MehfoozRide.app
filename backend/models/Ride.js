@@ -46,7 +46,8 @@ const RideSchema = new mongoose.Schema(
       default: "quiet",
     },
 
-    otp:         { type: String, required: true },
+    // select: false — the OTP must never reach the driver; only bookRide returns it to the passenger
+    otp:         { type: String, required: true, select: false },
     otpVerified: { type: Boolean, default: false },
 
     // ── Fake Ride Detection ───────────────────────────────────────────────

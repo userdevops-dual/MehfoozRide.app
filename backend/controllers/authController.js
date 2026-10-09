@@ -30,6 +30,8 @@ const sendTokenResponse = (user, statusCode, res) => {
       isVerified:    user.isVerified,
       cnicVerified:  user.cnicVerified,
       averageRating: user.averageRating,
+      totalRatings:  user.totalRatings,
+      totalRides:    user.totalRides,
       profilePhoto:  user.profilePhoto,
       guardianContacts: user.guardianContacts,
     },
@@ -239,9 +241,27 @@ exports.getMe = async (req, res) => {
 exports.updateProfile = async (req, res) => {
   try {
     const { name, phone, guardianContacts } = req.body;
+
+    // Only update the fields that were sent
+    const updates = {};
+    if (name !== undefined)  updates.name = name;
+    if (phone !== undefined) {
+      const taken = await User.exists({ phone, _id: { $ne: req.user.id } });
+      if (taken) return res.status(400).json({ success: false, message: "This phone number is already in use" });
+      updates.phone = phone;
+    }
+    if (guardianContacts !== undefined) {
+      if (!Array.isArray(guardianContacts)) {
+        return res.status(400).json({ success: false, message: "guardianContacts must be a list" });
+      }
+      updates.guardianContacts = guardianContacts.map(c => ({
+        name: c.name, phone: c.phone, isActive: c.isActive === true,
+      }));
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       req.user.id,
-      { name, phone, guardianContacts },
+      updates,
       { new: true, runValidators: true }
     );
     res.status(200).json({ success: true, message: "Profile updated successfully", user: updatedUser });

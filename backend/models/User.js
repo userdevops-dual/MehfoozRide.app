@@ -25,7 +25,8 @@ const UserSchema = new mongoose.Schema(
       required: true,
     },
 
-    role: { type: String, enum: ["passenger", "driver"], required: [true, "Role is required"], default: "passenger" },
+    // "admin" is never assignable through signup — authController only accepts passenger/driver
+    role: { type: String, enum: ["passenger", "driver", "admin"], required: [true, "Role is required"], default: "passenger" },
     profilePhoto: { type: String, default: "" },
 
     // ── Driver-specific ──────────────────────────────────────────────────

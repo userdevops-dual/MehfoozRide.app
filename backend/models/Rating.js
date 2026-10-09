@@ -30,12 +30,13 @@ const RatingSchema = new mongoose.Schema(
 
     // ── Star Rating ──────────────────────────
     // 5-category ratings (REQ 17)
+    // No defaults: a default of 0 would fail the min: 1 validator on every save
   categoryRatings: {
-    safety:          { type: Number, min: 1, max: 5, default: 0 },
-    professionalism: { type: Number, min: 1, max: 5, default: 0 },
-    cleanliness:     { type: Number, min: 1, max: 5, default: 0 },
-    punctuality:     { type: Number, min: 1, max: 5, default: 0 },
-    respectful:      { type: Number, min: 1, max: 5, default: 0 },
+    safety:          { type: Number, min: 1, max: 5 },
+    professionalism: { type: Number, min: 1, max: 5 },
+    cleanliness:     { type: Number, min: 1, max: 5 },
+    punctuality:     { type: Number, min: 1, max: 5 },
+    respectful:      { type: Number, min: 1, max: 5 },
   },
   stars: {
       type: Number,
@@ -66,6 +67,8 @@ const RatingSchema = new mongoose.Schema(
         "rude_behaviour",
         "harassment",
         "vehicle_condition",
+        "wrong_vehicle",
+        "refused_destination",
         "other",
         "",
       ],

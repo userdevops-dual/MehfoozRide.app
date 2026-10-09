@@ -8,7 +8,10 @@ const connectDB  = require('./config/db');
 const initSocket = require('./socket/socket');
 
 dotenv.config();
-console.log('DEBUG MONGO_URI:', process.env.MONGO_URI);
+if (!process.env.MONGO_URI || !process.env.JWT_SECRET) {
+  console.error('❌ MONGO_URI and JWT_SECRET must be set in backend/.env (see .env.example)');
+  process.exit(1);
+}
 connectDB();
 
 const app = express();
