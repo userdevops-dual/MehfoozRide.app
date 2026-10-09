@@ -18,6 +18,15 @@ import { Input, PrimaryBtn } from '../../components/UI';
 import { C, GRAD } from '../../utils/theme';
 import { authAPI } from '../../services/api';
 
+// Type digits only — dashes are added automatically: 12345-6789012-3
+// (number keyboards on some Android phones have no "-" key)
+const formatCNIC = (text) => {
+  const d = text.replace(/\D/g, '').slice(0, 13);
+  if (d.length <= 5)  return d;
+  if (d.length <= 12) return `${d.slice(0, 5)}-${d.slice(5)}`;
+  return `${d.slice(0, 5)}-${d.slice(5, 12)}-${d.slice(12)}`;
+};
+
 export default function SignupScreen({ navigation }) {
   const { signup } = useAuth();
 
@@ -240,7 +249,7 @@ export default function SignupScreen({ navigation }) {
               <View style={styles.rowInput}>
                 <Input placeholder="+92 300 1234567" value={form.phone}
                   onChangeText={v => { update('phone', v); setOtpSent(false); setPhoneVerified(false); }}
-                  keyboardType="phone-pad" style={{ flex: 1 }} />
+                  keyboardType="phone-pad" containerStyle={{ flex: 1 }} />
                 <TouchableOpacity onPress={sendPhoneOTP} disabled={otpLoading}
                   style={[styles.sideBtn, phoneVerified && { backgroundColor: '#27AE60' }]}>
                   {otpLoading
@@ -253,7 +262,7 @@ export default function SignupScreen({ navigation }) {
                 <View style={styles.otpRow}>
                   <Input placeholder="Enter 6-digit OTP" value={phoneOtp}
                     onChangeText={setPhoneOtp} keyboardType="numeric" maxLength={6}
-                    style={{ flex: 1 }} />
+                    containerStyle={{ flex: 1 }} />
                   <TouchableOpacity onPress={verifyPhoneOTP} style={[styles.sideBtn, { backgroundColor: C.plum }]}>
                     <Text style={styles.sideBtnText}>Verify</Text>
                   </TouchableOpacity>
@@ -271,8 +280,8 @@ export default function SignupScreen({ navigation }) {
               <Text style={styles.inputLabel}>🪪 CNIC / National ID</Text>
               <View style={styles.rowInput}>
                 <Input placeholder="12345-6789012-2  (last digit must be even)" value={form.cnic}
-                  onChangeText={v => { update('cnic', v); setCnicStatus(null); }}
-                  keyboardType="numeric" style={{ flex: 1 }} />
+                  onChangeText={v => { update('cnic', formatCNIC(v)); setCnicStatus(null); }}
+                  keyboardType="number-pad" maxLength={15} containerStyle={{ flex: 1 }} />
                 <TouchableOpacity onPress={handleVerifyCNIC} disabled={cnicLoading}
                   style={[styles.sideBtn,
                     cnicStatus === 'verified' && { backgroundColor: '#27AE60' },

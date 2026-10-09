@@ -109,12 +109,12 @@ export default function BookingScreen({ navigation }) {
           <View style={styles.locationRow}>
             <View style={[styles.dot, { backgroundColor: C.success }]} />
             <Input placeholder="Pickup location" value={pickup}
-              onChangeText={setPickup} style={styles.locationInput} />
+              onChangeText={setPickup} style={styles.locationInput} containerStyle={{ flex: 1 }} />
           </View>
           <View style={[styles.locationRow, { borderTopWidth: 1, borderTopColor: C.border }]}>
             <View style={[styles.dot, { backgroundColor: C.rose }]} />
             <Input placeholder="Where to? e.g. Gulberg III" value={dropoff}
-              onChangeText={setDropoff} style={styles.locationInput} />
+              onChangeText={setDropoff} style={styles.locationInput} containerStyle={{ flex: 1 }} />
           </View>
         </View>
 

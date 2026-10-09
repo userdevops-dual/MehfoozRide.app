@@ -14,13 +14,17 @@ import LinearGradient from 'react-native-linear-gradient';
 import { C, GRAD } from '../utils/theme';
 
 // ─── Input ───────────────────────────────────────────────────────────────────
+// `style` styles the text box; `containerStyle` styles the outer wrapper.
+// Inside a row, pass containerStyle={{ flex: 1 }} — otherwise the wrapper
+// shrinks to zero width and the field can't be seen or tapped.
+// Any other TextInput props (maxLength, editable, …) are passed through.
 export function Input({
   label, icon, placeholder, value, onChangeText,
   secureTextEntry = false, keyboardType = 'default',
-  autoCapitalize = 'sentences', style,
+  autoCapitalize = 'sentences', style, containerStyle, ...textInputProps
 }) {
   return (
-    <View>
+    <View style={containerStyle}>
       {label ? <Text style={s.label}>{label}</Text> : null}
       <View style={s.inputRow}>
         {icon ? <Text style={s.icon}>{icon}</Text> : null}
@@ -34,6 +38,7 @@ export function Input({
           keyboardType={keyboardType}
           autoCapitalize={autoCapitalize}
           autoCorrect={false}
+          {...textInputProps}
         />
       </View>
     </View>
