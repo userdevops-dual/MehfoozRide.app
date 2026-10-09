@@ -60,14 +60,15 @@ export default function AppNavigator() {
     return 'PassengerHome';
   };
 
-  // Keying the navigator on the session remounts it on login / logout,
-  // so each role lands on its home screen and logout returns to Splash.
+  // Keying the container (which holds the navigation state) on the session
+  // resets navigation on login / logout, so each role lands on its home
+  // screen and logout returns to Splash. Keying only the Stack.Navigator
+  // is not enough — the container would restore the previous route.
   const sessionKey = user ? `${user._id}:${user.role}` : 'guest';
 
   return (
-    <NavigationContainer>
+    <NavigationContainer key={sessionKey}>
       <Stack.Navigator
-        key={sessionKey}
         initialRouteName={getInitial()}
         screenOptions={{
           headerShown: false,
