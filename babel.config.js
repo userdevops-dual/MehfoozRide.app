@@ -1,4 +1,4 @@
 module.exports = {
-  presets: ['module:@react-native/babel-preset'],
-  plugins: ['react-native-reanimated/plugin'],
+  // babel-preset-expo inlines process.env.EXPO_OS and adds the Reanimated/worklets plugin itself
+  presets: ['babel-preset-expo'],
 };
