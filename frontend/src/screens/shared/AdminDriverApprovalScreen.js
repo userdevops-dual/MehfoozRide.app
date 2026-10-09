@@ -7,7 +7,6 @@ import {
   StyleSheet, Alert, ActivityIndicator,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { C, GRAD } from '../../utils/theme';
@@ -24,6 +23,7 @@ export default function AdminDriverApprovalScreen({ navigation }) {
   const [tab,       setTab]     = useState('pending');
   const [drivers,   setDrivers] = useState([]);
   const [incidents, setIncidents] = useState([]);
+  const [rides,     setRides]   = useState([]);
   const [stats,     setStats]   = useState(null);
   const [loading,   setLoading] = useState(false);
 
@@ -46,15 +46,13 @@ export default function AdminDriverApprovalScreen({ navigation }) {
         setIncidents(r.incidents || []);
       } else if (tab === 'active') {
         const r = await adminAPI.get('/active-rides');
-        setRides(r.rides || DEMO_ACTIVE_RIDES);
+        setRides(r.rides || []);
       } else if (tab === 'stats') {
         const r = await adminAPI.get('/stats');
         setStats(r.stats);
       }
-    } catch (_) {
-      // Demo data if backend not running
-      if (tab === 'pending') setDrivers(DEMO_DRIVERS);
-      if (tab === 'stats')   setStats(DEMO_STATS);
+    } catch (err) {
+      Alert.alert('Could not load', err.response?.data?.message || 'Server error. Is the backend running?');
     }
     setLoading(false);
   };
@@ -75,9 +73,8 @@ export default function AdminDriverApprovalScreen({ navigation }) {
               });
               Alert.alert('Done', `${driver.name} approved! They can now accept rides.`);
               fetchData();
-            } catch (_) {
-              Alert.alert('Approved (Demo)', `${driver.name} would be activated in production.`);
-              setDrivers(prev => prev.filter(d => d._id !== driver._id));
+            } catch (err) {
+              Alert.alert('Not Approved', err.response?.data?.message || 'Server error. Please try again.');
             }
           },
         },
@@ -100,8 +97,8 @@ export default function AdminDriverApprovalScreen({ navigation }) {
                 reason: 'Background check failed — admin review',
               });
               fetchData();
-            } catch (_) {
-              setDrivers(prev => prev.filter(d => d._id !== driver._id));
+            } catch (err) {
+              Alert.alert('Not Rejected', err.response?.data?.message || 'Server error. Please try again.');
             }
           },
         },
@@ -114,6 +111,7 @@ export default function AdminDriverApprovalScreen({ navigation }) {
     { id: 'background', label: '🔍 Background', color: C.info   },
     { id: 'fake',       label: '🚨 Fake Rides', color: C.danger },
     { id: 'sos',        label: '🆘 SOS',        color: '#E74C3C' },
+    { id: 'active',     label: '🟢 Live Rides', color: C.success },
     { id: 'stats',      label: '📊 Stats',      color: C.plum   },
   ];
 
@@ -123,7 +121,7 @@ export default function AdminDriverApprovalScreen({ navigation }) {
         <TouchableOpacity onPress={() => {
           Alert.alert('Logout', 'Sign out of admin panel?', [
             { text: 'Cancel' },
-            { text: 'Logout', onPress: async () => { await logout(); navigation.replace('Login'); }},
+            { text: 'Logout', onPress: logout },
           ]);
         }} style={styles.backBtn}>
           <Text style={{ color: '#fff', fontSize: 16 }}>🚪 Logout</Text>
@@ -270,11 +268,6 @@ export default function AdminDriverApprovalScreen({ navigation }) {
   );
 }
 
-const DEMO_DRIVERS = [
-  { _id: 'd1', name: 'Fatima Malik', email: 'fatima@demo.com', phone: '+92300111', cnic: '35202-1234567-8', cnicVerified: true, isVerified: false, driverDetails: { licenseNumber: 'DL-12345', vehicleMake: 'Toyota', vehicleModel: 'Corolla', licensePlate: 'LHR-1234', backgroundCheck: 'pending' } },
-  { _id: 'd2', name: 'Ayesha Raza',  email: 'ayesha@demo.com', phone: '+92300222', cnic: '35202-7654321-2', cnicVerified: true, isVerified: false, driverDetails: { licenseNumber: 'DL-67890', vehicleMake: 'Honda',  vehicleModel: 'City',    licensePlate: 'LHR-5678', backgroundCheck: 'pending' } },
-];
-const DEMO_STATS = { totalUsers: 248, totalDrivers: 32, totalPassengers: 216, pendingDrivers: 5, completedRides: 1240, sosCount: 3, fakeRideCount: 2, deviationCount: 7, totalRevenue: 345800 };
 
 const styles = StyleSheet.create({
   screen:         { flex: 1, backgroundColor: '#F5F5F5' },
@@ -310,75 +303,3 @@ const styles = StyleSheet.create({
   incidentTitle:  { fontSize: 14, fontWeight: '800', color: '#1A1A1A', marginBottom: 4 },
   incidentRow:    { fontSize: 12, color: '#555' },
 });
-
-// ═══════════════════════════════════════════════════════
-//  ACTIVE RIDES MONITOR — REQ 24: Admin monitors live rides
-//  Appended to AdminDriverApprovalScreen tab "active"
-// ═══════════════════════════════════════════════════════
-
-export function ActiveRidesMonitor() {
-  const [rides,   setRides]   = React.useState([]);
-  const [loading, setLoading] = React.useState(false);
-  const { default: axios } = require('axios');
-
-  const fetchActive = async () => {
-    setLoading(true);
-    try {
-      const r = await axios.get(`${BACKEND_URL}/api/admin/active-rides`);
-      setRides(r.data.rides || []);
-    } catch (_) {
-      setRides(DEMO_ACTIVE_RIDES);
-    }
-    setLoading(false);
-  };
-
-  React.useEffect(() => {
-    fetchActive();
-    const interval = setInterval(fetchActive, 15000); // refresh every 15s
-    return () => clearInterval(interval);
-  }, []);
-
-  if (loading) return <ActivityIndicator color={C.rose} style={{ marginTop: 40 }} />;
-
-  return (
-    <ScrollView contentContainerStyle={{ padding: 14, gap: 12, paddingBottom: 40 }}>
-      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <Text style={{ fontSize: 14, fontWeight: '800', color: C.text }}>🟢 Active Rides ({rides.length})</Text>
-        <TouchableOpacity onPress={fetchActive} style={{ backgroundColor: C.rose, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 6 }}>
-          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>↻ Refresh</Text>
-        </TouchableOpacity>
-      </View>
-      {rides.length === 0 && (
-        <View style={{ alignItems: 'center', marginTop: 40 }}>
-          <Text style={{ fontSize: 40 }}>🚗</Text>
-          <Text style={{ color: C.muted, fontSize: 14, marginTop: 8 }}>No active rides right now</Text>
-        </View>
-      )}
-      {rides.map((ride, i) => (
-        <View key={i} style={{
-          backgroundColor: '#fff', borderRadius: 16, padding: 14,
-          borderWidth: 1, borderColor: C.border, gap: 6,
-          borderLeftWidth: 4,
-          borderLeftColor: ride.sosActivated ? '#E74C3C' : ride.routeDeviated ? '#F39C12' : '#27AE60'
-        }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Text style={{ fontSize: 13, fontWeight: '800', color: C.text }}>
-              {ride.sosActivated ? '🆘 SOS ACTIVE' : ride.routeDeviated ? '⚠️ DEVIATION' : '🟢 In Progress'}
-            </Text>
-            <Text style={{ fontSize: 10, color: C.muted }}>{new Date(ride.startedAt || ride.createdAt).toLocaleTimeString()}</Text>
-          </View>
-          <Text style={{ fontSize: 12, color: C.text }}>👩 Passenger: {ride.passenger?.name || 'N/A'} · {ride.passenger?.phone || ''}</Text>
-          <Text style={{ fontSize: 12, color: C.text }}>🚗 Driver: {ride.driver?.name || 'N/A'} · {ride.driver?.driverDetails?.licensePlate || ''}</Text>
-          <Text style={{ fontSize: 11, color: C.muted }}>📍 {ride.pickupLocation?.address || ''} → {ride.dropoffLocation?.address || ''}</Text>
-          <Text style={{ fontSize: 11, color: C.muted }}>💰 Est. Fare: Rs. {ride.estimatedFare || 0} · {ride.distanceKm || 0} km</Text>
-          {ride.isPooled && <Text style={{ fontSize: 10, color: C.rose, fontWeight: '700' }}>👯‍♀️ Pool Ride</Text>}
-        </View>
-      ))}
-    </ScrollView>
-  );
-}
-
-const DEMO_ACTIVE_RIDES = [
-  { passenger: { name: 'Ayesha Khan', phone: '+92300111' }, driver: { name: 'Fatima Malik', driverDetails: { licensePlate: 'LHR-1234' } }, pickupLocation: { address: 'DHA Phase 5' }, dropoffLocation: { address: 'Gulberg III' }, estimatedFare: 280, distanceKm: 7.2, sosActivated: false, routeDeviated: false, createdAt: new Date(), isPooled: false },
-  { passenger: { name: 'Sara Ahmed',  phone: '+92300222' }, driver: { name: 'Zainab Ali',   driverDetails: { licensePlate: 'LHR-5678' } }, pickupLocation: { address: 'Model Town'  }, dropoffLocation: { address: 'Liberty Market' }, estimatedFare: 180, distanceKm: 4.1, sosActivated: false, routeDeviated: true,  createdAt: new Date(), isPooled: true  },
-];

@@ -4,20 +4,19 @@ import { BACKEND_URL } from './api';
 
 let socket = null;
 
-export const connectSocket = (userId) => {
-  if (socket?.connected) return socket;
+// The server identifies the user from the JWT sent in the handshake,
+// so no user id is ever sent from the client.
+export const connectSocket = (token) => {
+  if (socket) socket.disconnect();
 
   socket = io(BACKEND_URL, {
     transports: ['websocket'],
+    auth: { token },
     reconnectionAttempts: 5,
     reconnectionDelay: 1000,
   });
 
-  socket.on('connect', () => {
-    console.log('✅ Socket connected:', socket.id);
-    if (userId) socket.emit('user:join', { userId });
-  });
-
+  socket.on('connect', () => console.log('✅ Socket connected:', socket.id));
   socket.on('disconnect', () => console.log('❌ Socket disconnected'));
   socket.on('connect_error', (err) => console.log('Socket error:', err.message));
 
@@ -31,62 +30,57 @@ export const disconnectSocket = () => {
 };
 
 // ── Emit Helpers ────────────────────────────────────────────────────────────
-export const emitNewRideRequest = (rideId, pickupCoordinates) => {
-  socket?.emit('ride:new-request', { rideId, pickupCoordinates });
+export const emitNewRideRequest = (rideId) => {
+  socket?.emit('ride:new-request', { rideId });
 };
 
-export const emitRideAccepted = (rideId, driverId, passengerId) => {
-  socket?.emit('ride:accepted', { rideId, driverId, passengerId });
+export const emitRideAccepted = (rideId) => {
+  socket?.emit('ride:accepted', { rideId });
 };
 
-export const emitDriverArrived = (passengerId) => {
-  socket?.emit('ride:driver-arrived', { passengerId });
+export const emitDriverArrived = (rideId) => {
+  socket?.emit('ride:driver-arrived', { rideId });
 };
 
-export const emitOTPVerified = (passengerId, rideId) => {
-  socket?.emit('ride:otp-verified', { passengerId, rideId });
+export const emitOTPVerified = (rideId) => {
+  socket?.emit('ride:otp-verified', { rideId });
 };
 
-export const emitOTPFailed = (rideId, passengerId, failureCount) => {
-  socket?.emit('ride:otp-failed', { rideId, passengerId, failureCount });
+export const emitOTPFailed = (rideId, failureCount) => {
+  socket?.emit('ride:otp-failed', { rideId, failureCount });
 };
 
-export const emitRideCompleted = (passengerId, rideId, fare) => {
-  socket?.emit('ride:completed', { passengerId, rideId, fare });
+export const emitRideCompleted = (rideId) => {
+  socket?.emit('ride:completed', { rideId });
 };
 
-export const emitSOS = (rideId, passengerId, coordinates) => {
-  socket?.emit('sos:activated', { rideId, passengerId, coordinates });
+export const emitSOS = (rideId, coordinates) => {
+  socket?.emit('sos:activated', { rideId, coordinates });
 };
 
-export const emitDriverLocation = (driverId, coordinates, rideId) => {
-  socket?.emit('driver:location', { driverId, coordinates, rideId });
+export const emitDriverLocation = (coordinates, rideId) => {
+  socket?.emit('driver:location', { coordinates, rideId });
 };
 
-export const emitDriverOnline = (driverId, isOnline) => {
-  socket?.emit('driver:toggle-online', { driverId, isOnline });
+export const emitDriverOnline = (isOnline) => {
+  socket?.emit('driver:toggle-online', { isOnline });
 };
 
 // ── Listen Helpers ───────────────────────────────────────────────────────────
-export const onDriverLocation = (callback) => {
-  socket?.on('driver:location:update', callback);
+export const onEvent = (event, callback) => {
+  socket?.on(event, callback);
 };
 
-export const onRouteDeviation = (callback) => {
-  socket?.on('ride:route-deviation', callback);
-};
-
-export const onGuardianNotified = (callback) => {
-  socket?.on('guardian:notified', callback);
-};
-
-export const onOTPWarning = (callback) => {
-  socket?.on('ride:otp-warning', callback);
-};
-
-export const onFakeRideAlert = (callback) => {
-  socket?.on('ride:fake-ride-alert', callback);
-};
+export const onIncomingRide     = (callback) => onEvent('ride:incoming', callback);
+export const onDriverFound      = (callback) => onEvent('ride:driver-found', callback);
+export const onDriverArrived    = (callback) => onEvent('ride:driver-at-pickup', callback);
+export const onRideStarted      = (callback) => onEvent('ride:started', callback);
+export const onRideFinished     = (callback) => onEvent('ride:finished', callback);
+export const onDriverLocation   = (callback) => onEvent('driver:location:update', callback);
+export const onRouteDeviation   = (callback) => onEvent('ride:route-deviation', callback);
+export const onGuardianNotified = (callback) => onEvent('guardian:notified', callback);
+export const onOTPWarning       = (callback) => onEvent('ride:otp-warning', callback);
+export const onFakeRideAlert    = (callback) => onEvent('ride:fake-ride-alert', callback);
 
 export const offEvent = (event) => {
   socket?.off(event);

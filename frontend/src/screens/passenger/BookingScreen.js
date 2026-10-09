@@ -81,7 +81,7 @@ export default function BookingScreen({ navigation }) {
         rideType,
       });
       if (res.success) {
-        emitNewRideRequest(res.ride._id, [74.3436, 31.4804]);
+        emitNewRideRequest(res.ride._id);
         navigation.navigate('FindingDriver', { ride: res.ride });
       } else {
         Alert.alert('Booking Failed', res.message);

@@ -1,7 +1,7 @@
 // src/context/AuthContext.js
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { authAPI } from '../services/api';
+import { authAPI, setAuthToken } from '../services/api';
 import { connectSocket, disconnectSocket } from '../services/socket';
 
 const AuthContext = createContext(null);
@@ -12,20 +12,25 @@ export const AuthProvider = ({ children }) => {
   const [token,   setToken]   = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const startSession = (newToken, newUser) => {
+    setAuthToken(newToken);
+    setToken(newToken);
+    setUser(newUser);
+    connectSocket(newToken);
+  };
+
   // Restore session on app open
   useEffect(() => {
     (async () => {
       try {
         const saved = await AsyncStorage.getItem('mehfooz_token');
         if (saved) {
-          setToken(saved);
+          setAuthToken(saved);
           const res = await authAPI.getMe();
-          if (res.success) {
-            setUser(res.user);
-            if (res.user.role !== 'admin') connectSocket(res.user._id);
-          }
+          if (res.success) startSession(saved, res.user);
         }
       } catch {
+        setAuthToken(null);
         await AsyncStorage.removeItem('mehfooz_token');
       } finally {
         setLoading(false);
@@ -37,9 +42,7 @@ export const AuthProvider = ({ children }) => {
     const res = await authAPI.login({ email, password });
     if (res.success) {
       await AsyncStorage.setItem('mehfooz_token', res.token);
-      setToken(res.token);
-      setUser(res.user);
-      if (res.user.role !== 'admin') connectSocket(res.user._id);
+      startSession(res.token, res.user);
     }
     return res;
   };
@@ -48,9 +51,7 @@ export const AuthProvider = ({ children }) => {
     const res = await authAPI.signup(formData);
     if (res.success) {
       await AsyncStorage.setItem('mehfooz_token', res.token);
-      setToken(res.token);
-      setUser(res.user);
-      if (res.user.role !== 'admin') connectSocket(res.user._id);
+      startSession(res.token, res.user);
     }
     return res;
   };
@@ -58,6 +59,7 @@ export const AuthProvider = ({ children }) => {
   const logout = async () => {
     await AsyncStorage.removeItem('mehfooz_token');
     disconnectSocket();
+    setAuthToken(null);
     setToken(null);
     setUser(null);
   };

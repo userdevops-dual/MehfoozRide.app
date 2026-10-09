@@ -5,14 +5,30 @@
 import React, { useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView,
-  StyleSheet, Alert, Modal,
+  StyleSheet, Alert, Modal, Linking,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { Badge, PrimaryBtn, GhostBtn, Card } from '../../components/UI';
+import { rideAPI } from '../../services/api';
 import { C, GRAD } from '../../utils/theme';
+
+const dial = (number) => {
+  Linking.openURL(`tel:${number}`).catch(() => Alert.alert('Call Failed', `Please dial ${number} manually.`));
+};
 
 export default function DriverFoundScreen({ navigation, route }) {
   const { ride, driver } = route.params || { ride: DEMO_RIDE, driver: DEMO_DRIVER };
+
+  const cancelForSafety = async () => {
+    try {
+      await rideAPI.cancel(ride?._id, 'Driver identity or vehicle did not match');
+      Alert.alert('Ride Cancelled', 'Ride cancelled for safety. You will not be charged.', [
+        { text: 'OK', onPress: () => navigation.replace('PassengerHome') },
+      ]);
+    } catch (err) {
+      Alert.alert('Could Not Cancel', `${err.response?.data?.message || 'Server error.'}\n\nDo NOT enter the vehicle. Use SOS if you feel unsafe.`);
+    }
+  };
 
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   const [plateConfirmed,  setPlateConfirmed]  = useState(false);
@@ -51,15 +67,11 @@ export default function DriverFoundScreen({ navigation, route }) {
         {
           text: '🆘 Call Police (15)',
           style: 'destructive',
-          onPress: () => Alert.alert('Calling Police 15...'),
+          onPress: () => dial('15'),
         },
         {
           text: '❌ Cancel Ride',
-          onPress: () => {
-            Alert.alert('Ride Cancelled', 'Ride cancelled for safety. You will not be charged.', [
-              { text: 'OK', onPress: () => navigation.replace('PassengerHome') },
-            ]);
-          },
+          onPress: cancelForSafety,
         },
       ]
     );
@@ -174,7 +186,9 @@ export default function DriverFoundScreen({ navigation, route }) {
             <Text style={styles.driverRating}>⭐ {driverRating} · Verified Driver</Text>
             <Text style={styles.driverCar}>{driverVehicle} · <Text style={{ fontWeight: '800', color: C.rose }}>{driverPlate}</Text> · {driverColor}</Text>
           </View>
-          <TouchableOpacity style={styles.callBtn}><Text style={{ fontSize: 20 }}>📞</Text></TouchableOpacity>
+          {!!driver?.phone && (
+            <TouchableOpacity onPress={() => dial(driver.phone)} style={styles.callBtn}><Text style={{ fontSize: 20 }}>📞</Text></TouchableOpacity>
+          )}
         </View>
 
         <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
@@ -218,7 +232,7 @@ export default function DriverFoundScreen({ navigation, route }) {
         <Card style={{ marginBottom: 16, backgroundColor: `${C.plum}15` }}>
           <Text style={styles.otpTitle}>🔐 YOUR OTP — SHOW TO DRIVER</Text>
           <View style={{ flexDirection: 'row', justifyContent: 'center', gap: 10, marginVertical: 10 }}>
-            {(ride?.otp || '7842').split('').map((d, i) => (
+            {(ride?.otp || '----').split('').map((d, i) => (
               <View key={i} style={styles.otpDigit}><Text style={styles.otpNum}>{d}</Text></View>
             ))}
           </View>

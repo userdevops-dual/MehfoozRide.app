@@ -54,8 +54,8 @@ export default function SOSScreen({ navigation, route }) {
         setLocText(`📍 ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
       },
       () => {
-        setLocation({ lat: 31.5204, lng: 74.3587 }); // Lahore fallback
-        setLocText('📍 Approx. Lahore (GPS unavailable)');
+        // Never send a guessed location to guardians — say it's unavailable
+        setLocText('📍 GPS unavailable — tell responders where you are');
       },
       { enableHighAccuracy: true, timeout: 8000 }
     );

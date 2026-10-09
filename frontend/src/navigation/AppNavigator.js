@@ -36,6 +36,9 @@ import WalletScreen                from '../screens/shared/WalletScreen';
 import NotificationsScreen         from '../screens/shared/NotificationsScreen';
 import GuardianSetupScreen         from '../screens/shared/GuardianSetupScreen';
 
+// Admin
+import AdminDriverApprovalScreen   from '../screens/shared/AdminDriverApprovalScreen';
+
 const Stack = createNativeStackNavigator();
 
 export default function AppNavigator() {
@@ -52,13 +55,19 @@ export default function AppNavigator() {
   // Determine initial route based on role
   const getInitial = () => {
     if (!user) return 'Splash';
+    if (user.role === 'admin')  return 'AdminPanel';
     if (user.role === 'driver') return 'DriverHome';
     return 'PassengerHome';
   };
 
+  // Keying the navigator on the session remounts it on login / logout,
+  // so each role lands on its home screen and logout returns to Splash.
+  const sessionKey = user ? `${user._id}:${user.role}` : 'guest';
+
   return (
     <NavigationContainer>
       <Stack.Navigator
+        key={sessionKey}
         initialRouteName={getInitial()}
         screenOptions={{
           headerShown: false,
@@ -95,6 +104,9 @@ export default function AppNavigator() {
         <Stack.Screen name="Wallet"         component={WalletScreen} />
         <Stack.Screen name="Notifications"  component={NotificationsScreen} />
         <Stack.Screen name="GuardianSetup"  component={GuardianSetupScreen} />
+
+        {/* Admin */}
+        <Stack.Screen name="AdminPanel"     component={AdminDriverApprovalScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

@@ -2,19 +2,12 @@
 import React, {useState, useEffect} from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity,
-  ScrollView, ActivityIndicator, RefreshControl,
+  ScrollView, ActivityIndicator, RefreshControl, Alert,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {rideAPI} from '../../services/api';
 import {C} from '../../utils/theme';
 
-const DEMO_RIDES = [
-  {_id:'r1', createdAt:'2024-04-29T10:30:00Z', pickupLocation:{address:'DHA Phase 5'}, dropoffLocation:{address:'Gulberg III'}, actualFare:280, distanceKm:7.2, durationMinutes:22, status:'completed', driver:{name:'Fatima Malik', averageRating:4.9}},
-  {_id:'r2', createdAt:'2024-04-28T14:15:00Z', pickupLocation:{address:'Johar Town'}, dropoffLocation:{address:'Liberty Market'}, actualFare:180, distanceKm:4.8, durationMinutes:16, status:'completed', driver:{name:'Sara Ahmed', averageRating:4.7}},
-  {_id:'r3', createdAt:'2024-04-26T09:00:00Z', pickupLocation:{address:'Model Town'}, dropoffLocation:{address:'Packages Mall'}, actualFare:320, distanceKm:9.1, durationMinutes:28, status:'completed', driver:{name:'Nadia Khan', averageRating:4.8}},
-  {_id:'r4', createdAt:'2024-04-24T16:45:00Z', pickupLocation:{address:'Bahria Town'}, dropoffLocation:{address:'Wapda Town'}, actualFare:220, distanceKm:6.3, durationMinutes:19, status:'completed', driver:{name:'Rabia Malik', averageRating:4.6}},
-  {_id:'r5', createdAt:'2024-04-22T08:20:00Z', pickupLocation:{address:'Garden Town'}, dropoffLocation:{address:'Defence'}, actualFare:260, distanceKm:5.9, durationMinutes:21, status:'completed', driver:{name:'Hina Akhtar', averageRating:4.5}},
-];
 
 export default function RideHistoryScreen({navigation}) {
   const [rides, setRides]       = useState([]);
@@ -24,10 +17,10 @@ export default function RideHistoryScreen({navigation}) {
 
   const loadRides = async () => {
     try {
-      const res = await rideAPI.myRides();
-      setRides(res.rides?.length ? res.rides : DEMO_RIDES);
-    } catch (_) {
-      setRides(DEMO_RIDES); // fallback to demo data
+      const res = await rideAPI.getMyRides();
+      setRides(res.rides || []);
+    } catch (err) {
+      Alert.alert('Could Not Load Rides', err.response?.data?.message || 'Server error. Pull down to retry.');
     } finally {
       setLoading(false);
       setRefreshing(false);

@@ -12,9 +12,10 @@ import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import { rideAPI } from '../../services/api';
 import {
-  emitSOS, onDriverLocation, onRouteDeviation,
+  emitSOS, onDriverLocation, onRouteDeviation, onRideStarted, onRideFinished,
   onGuardianNotified, onOTPWarning, onFakeRideAlert, offEvent,
 } from '../../services/socket';
+import { useAuth } from '../../context/AuthContext';
 import { C, GRAD } from '../../utils/theme';
 
 const BASE_FARE    = 80;
@@ -39,9 +40,14 @@ export default function ActiveRideScreen({ navigation, route }) {
   const [deviationAlert,    setDeviationAlert]     = useState(false);
   const [poolFarePerPax,    setPoolFarePerPax]     = useState(ride?.farePerPassenger || 0);
 
+  const { user } = useAuth();
   const mapRef    = useRef(null);
   const prevLoc   = useRef(null);
   const startTime = useRef(null);
+  const rideTimeRef = useRef(0); // latest values for socket callbacks registered once
+  rideTimeRef.current = rideTime;
+  const myLocationRef = useRef(null);
+  myLocationRef.current = myLocation;
 
   // ── Passenger GPS tracking ────────────────────────────────────────────────
   useEffect(() => {
@@ -63,11 +69,32 @@ export default function ActiveRideScreen({ navigation, route }) {
         }
         prevLoc.current = newLoc;
       },
-      () => setMyLocation({ latitude: 31.5204, longitude: 74.3587 }),
+      // On GPS error keep the last real fix — never substitute a made-up location
+      () => {},
       { enableHighAccuracy: true, distanceFilter: 10 }
     );
     return () => Geolocation.clearWatch(watchId);
   }, [otpVerified]);
+
+  // ── Sync with server on open — the ride may have started while we were on another screen
+  useEffect(() => {
+    if (!ride?._id) return;
+    rideAPI.getById(ride._id).then(res => {
+      const status = res.ride?.status;
+      if (status === 'in_progress' && !startTime.current) {
+        startTime.current = res.ride.startedAt ? new Date(res.ride.startedAt).getTime() : Date.now();
+        setRideTime(Math.max(0, Math.round((Date.now() - startTime.current) / 1000)));
+        setOtpVerified(true);
+        setShowOtpModal(false);
+      } else if (status === 'completed') {
+        navigation.replace('RideComplete', { ride: res.ride, driver, rideTime: (res.ride.durationMinutes || 0) * 60 });
+      } else if (status === 'cancelled') {
+        Alert.alert('Ride Cancelled', res.ride.cancelReason || 'This ride was cancelled.', [
+          { text: 'OK', onPress: () => navigation.replace('PassengerHome') },
+        ]);
+      }
+    }).catch(() => {});
+  }, []);
 
   // ── Socket listeners ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -100,16 +127,22 @@ export default function ActiveRideScreen({ navigation, route }) {
       ]);
     });
 
-    // ── FIXED: When driver successfully verifies OTP, this event fires ────
+    // When the driver enters the correct OTP the server emits 'ride:started'
     // Ride is now officially started — hide OTP modal, start timer
-    const { onEvent } = require('../../services/socket');
-    if (onEvent) {
-      onEvent('ride:otp-verified', () => {
-        setOtpVerified(true);
-        setShowOtpModal(false);
-        startTime.current = Date.now();
+    onRideStarted(() => {
+      setOtpVerified(true);
+      setShowOtpModal(false);
+      startTime.current = Date.now();
+    });
+
+    // Driver completed the ride — the server sends the final fare
+    onRideFinished(data => {
+      navigation.replace('RideComplete', {
+        ride: { ...ride, actualFare: data.fare, farePerPassenger: data.farePerPassenger },
+        driver,
+        rideTime: rideTimeRef.current,
       });
-    }
+    });
 
     onFakeRideAlert(data => {
       Alert.alert('🚨 Ride Cancelled', data.message, [
@@ -122,7 +155,8 @@ export default function ActiveRideScreen({ navigation, route }) {
       offEvent('ride:route-deviation');
       offEvent('guardian:notified');
       offEvent('ride:otp-warning');
-      offEvent('ride:otp-verified');
+      offEvent('ride:started');
+      offEvent('ride:finished');
       offEvent('ride:fake-ride-alert');
     };
   }, []);
@@ -143,9 +177,13 @@ export default function ActiveRideScreen({ navigation, route }) {
       { text: 'Cancel', style: 'cancel' },
       {
         text: '🆘 YES, SEND SOS', style: 'destructive', onPress: () => {
-          if (myLocation) emitSOS(ride?._id, null, [myLocation.longitude, myLocation.latitude]);
+          // Always raise the alert, with or without a GPS fix
+          const loc = myLocationRef.current;
+          emitSOS(ride?._id, loc ? [loc.longitude, loc.latitude] : null);
+          rideAPI.sos(ride?._id).catch(() => {}); // REST backup in case the socket is down
           navigation.navigate('SOSScreen', {
             rideId: ride?._id,
+            guardianContacts: (user?.guardianContacts || []).filter(g => g.isActive),
             driverInfo: driver ? {
               name:    driver.name,
               phone:   driver.phone || '',
@@ -201,7 +239,7 @@ export default function ActiveRideScreen({ navigation, route }) {
 
             {/* Big OTP digits */}
             <View style={styles.otpDigitsRow}>
-              {(ride?.otp || '7842').split('').map((d, i) => (
+              {(ride?.otp || '----').split('').map((d, i) => (
                 <View key={i} style={styles.otpDigit}>
                   <Text style={styles.otpNum}>{d}</Text>
                 </View>
@@ -334,14 +372,27 @@ export default function ActiveRideScreen({ navigation, route }) {
         ))}
       </View>
 
-      {/* End Ride */}
-      <TouchableOpacity onPress={() =>
-        Alert.alert('End Ride', 'Are you sure you want to end the ride?', [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Yes, End', onPress: () => navigation.replace('RideComplete', { ride, driver, rideTime }) },
-        ])} style={styles.endBtn}>
-        <Text style={styles.endBtnText}>🏁 End Ride</Text>
-      </TouchableOpacity>
+      {/* Cancel before pickup — once started, the driver completes the ride */}
+      {otpVerified ? (
+        <View style={styles.endBtn}>
+          <Text style={styles.endBtnText}>🏁 Your driver will end the ride at your destination</Text>
+        </View>
+      ) : (
+        <TouchableOpacity onPress={() =>
+          Alert.alert('Cancel Ride', 'Are you sure you want to cancel this ride?', [
+            { text: 'Keep Ride', style: 'cancel' },
+            { text: 'Yes, Cancel', style: 'destructive', onPress: async () => {
+              try {
+                await rideAPI.cancel(ride?._id, 'Cancelled by passenger before pickup');
+                navigation.replace('PassengerHome');
+              } catch (err) {
+                Alert.alert('Could Not Cancel', err.response?.data?.message || 'Server error. Please try again.');
+              }
+            }},
+          ])} style={styles.endBtn}>
+          <Text style={styles.endBtnText}>✕ Cancel Ride</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }

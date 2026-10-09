@@ -1,24 +1,28 @@
 // src/screens/passenger/FindingDriverScreen.js
 import React, {useEffect, useRef, useState} from 'react';
-import {View, Text, StyleSheet, Animated, Alert} from 'react-native';
+import {View, Text, StyleSheet, Animated, Alert, TouchableOpacity} from 'react-native';
 import {onDriverFound, offEvent} from '../../services/socket';
-import {PrimaryBtn} from '../../components/UI';
+import {rideAPI} from '../../services/api';
 import {C, GRAD} from '../../utils/theme';
 import LinearGradient from 'react-native-linear-gradient';
 
+// If no driver accepts within this time, the ride is cancelled on the server
+const SEARCH_TIMEOUT_SECONDS = 120;
+
 export default function FindingDriverScreen({navigation, route}) {
   const {ride} = route.params;
-  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   const anim = useRef(new Animated.Value(0)).current;
+  const done = useRef(false);
+
+  const cancelSearch = async (reason) => {
+    if (done.current) return;
+    done.current = true;
+    try { await rideAPI.cancel(ride._id, reason); } catch (_) {}
+  };
 
   useEffect(() => {
-    // Animate progress bar
-    const interval = setInterval(() => {
-      setProgress(p => {
-        if (p >= 100) { clearInterval(interval); return 100; }
-        return p + 2;
-      });
-    }, 80);
+    const interval = setInterval(() => setElapsed(s => s + 1), 1000);
 
     // Pulse animation
     Animated.loop(
@@ -28,27 +32,37 @@ export default function FindingDriverScreen({navigation, route}) {
       ])
     ).start();
 
-    // Listen for driver found event from socket
+    // Real driver accepted the ride (sent by the server after a successful accept)
     onDriverFound((data) => {
-      clearInterval(interval);
+      if (data?.rideId?.toString() !== ride._id?.toString() || done.current) return;
+      done.current = true;
       navigation.replace('DriverFound', {ride, driver: data.driver});
     });
 
-    // Simulate finding driver after 5 seconds (for demo without full socket setup)
-    const demo = setTimeout(() => {
-      navigation.replace('DriverFound', {
-        ride,
-        driver: {
-          name:'Fatima Malik', phone:'+923009876543', rating:4.9,
-          vehicle:'Toyota Corolla', vehicleColor:'White', licensePlate:'ABC-1234',
-        },
-      });
-    }, 5000);
+    // No driver in time — cancel instead of showing a made-up driver
+    const timeout = setTimeout(async () => {
+      if (done.current) return;
+      await cancelSearch('No driver available');
+      Alert.alert('No Drivers Available', 'No verified driver accepted your ride. Please try again in a few minutes.', [
+        {text: 'OK', onPress: () => navigation.replace('PassengerHome')},
+      ]);
+    }, SEARCH_TIMEOUT_SECONDS * 1000);
 
-    return () => { clearInterval(interval); clearTimeout(demo); offEvent('ride:driver-found'); };
+    return () => { clearInterval(interval); clearTimeout(timeout); offEvent('ride:driver-found'); };
   }, []);
 
+  const onCancelPress = () => {
+    Alert.alert('Cancel Ride?', 'Stop searching for a driver?', [
+      {text: 'Keep Searching', style: 'cancel'},
+      {text: 'Cancel Ride', style: 'destructive', onPress: async () => {
+        await cancelSearch('Cancelled by passenger while searching');
+        navigation.replace('PassengerHome');
+      }},
+    ]);
+  };
+
   const scale = anim.interpolate({inputRange:[0,1], outputRange:[1, 1.08]});
+  const progress = Math.min(100, Math.round((elapsed / SEARCH_TIMEOUT_SECONDS) * 100));
 
   return (
     <LinearGradient colors={GRAD.primary} style={styles.screen}>
@@ -71,16 +85,21 @@ export default function FindingDriverScreen({navigation, route}) {
       <View style={styles.progressBar}>
         <View style={[styles.progressFill, {width:`${progress}%`}]} />
       </View>
-      <Text style={styles.progressText}>{progress}% matched</Text>
+      <Text style={styles.progressText}>Searching… {elapsed}s</Text>
 
       <View style={styles.tags}>
-        {['✅ ID Verified','⭐ 4.8+ Rating','🛡️ Safety Checked','📍 2km Away'].map(t=>(
+        {['✅ ID Verified','🛡️ Safety Checked','♀ Female Drivers Only'].map(t=>(
           <View key={t} style={styles.tag}><Text style={styles.tagText}>{t}</Text></View>
         ))}
       </View>
+
+      <TouchableOpacity onPress={onCancelPress} style={styles.cancelBtn}>
+        <Text style={styles.cancelText}>Cancel Ride</Text>
+      </TouchableOpacity>
     </LinearGradient>
   );
 }
+
 
 const styles = StyleSheet.create({
   screen:      {flex:1, alignItems:'center', justifyContent:'center', padding:32},
@@ -96,4 +115,6 @@ const styles = StyleSheet.create({
   tags:        {flexDirection:'row', flexWrap:'wrap', gap:8, justifyContent:'center'},
   tag:         {paddingHorizontal:14, paddingVertical:7, borderRadius:20, backgroundColor:'rgba(255,255,255,0.2)'},
   tagText:     {color:'#fff', fontSize:11, fontWeight:'700'},
+  cancelBtn:   {marginTop:32, paddingHorizontal:28, paddingVertical:12, borderRadius:24, borderWidth:1.5, borderColor:'rgba(255,255,255,0.7)'},
+  cancelText:  {color:'#fff', fontWeight:'700', fontSize:14},
 });

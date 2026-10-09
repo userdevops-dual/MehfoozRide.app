@@ -23,12 +23,8 @@ export default function LoginScreen({ navigation }) {
     setLoading(true);
     try {
       const res = await login(identifier.trim().toLowerCase(), password);
-      if (res.success) {
-        const role = res.user.role;
-        if (role === 'admin')     navigation.replace('AdminPanel');
-        else if (role === 'driver') navigation.replace('DriverHome');
-        else                       navigation.replace('PassengerHome');
-      } else {
+      // On success AppNavigator remounts on the role's home screen
+      if (!res.success) {
         Alert.alert('Login Failed', res.message || 'Invalid credentials');
       }
     } catch (err) {

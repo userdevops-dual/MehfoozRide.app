@@ -30,6 +30,17 @@ const CATEGORIES = [
   { key: 'respectful',      label: 'Respectful Behavior', icon: '🤝' },
 ];
 
+// value must match Rating.complaintType enum on the backend
+const COMPLAINT_TYPES = [
+  { value: 'harassment',          label: 'Harassment' },
+  { value: 'unsafe_driving',      label: 'Unsafe driving' },
+  { value: 'rude_behaviour',      label: 'Rude behavior' },
+  { value: 'wrong_route',         label: 'Route deviation' },
+  { value: 'wrong_vehicle',       label: 'Wrong vehicle' },
+  { value: 'refused_destination', label: 'Refused destination' },
+  { value: 'other',               label: 'Other' },
+];
+
 export default function RideCompleteScreen({ navigation, route }) {
   const { ride, driver, rideTime } = route.params || {};
   const fmt = s => `${Math.floor((s || 920) / 60).toString().padStart(2, '0')}:${((s || 920) % 60).toString().padStart(2, '0')}`;
@@ -69,18 +80,23 @@ export default function RideCompleteScreen({ navigation, route }) {
     if (!allRated) {
       Alert.alert('Rate All Categories', 'Please rate all 5 categories before submitting.'); return;
     }
+    if (complaint && !complaintType) {
+      Alert.alert('Complaint Type', 'Please choose what the complaint is about.'); return;
+    }
     setLoading(true);
     try {
-      await rideAPI.rate(ride?._id || 'demo', {
+      await rideAPI.rate(ride?._id, {
         stars:           overallStars,
         categoryRatings,
         comment,
         hasComplaint:    complaint,
-        complaintType,
+        complaintType:   complaint ? complaintType : '',
       });
-    } catch (_) {}
+      setDone(true);
+    } catch (err) {
+      Alert.alert('Not Submitted', `${err.response?.data?.message || 'Server error.'}\n\nYour rating${complaint ? ' and complaint were' : ' was'} not saved. Please try again.`);
+    }
     setLoading(false);
-    setDone(true);
   };
 
   // ── Done screen ───────────────────────────────────────────────────────────
@@ -233,13 +249,10 @@ export default function RideCompleteScreen({ navigation, route }) {
             {complaint && (
               <View style={styles.complaintTypes}>
                 <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 8 }}>Complaint Type:</Text>
-                {[
-                  'Unsafe driving', 'Rude behavior', 'Route deviation',
-                  'Wrong vehicle', 'Refused destination', 'Other',
-                ].map(type => (
-                  <TouchableOpacity key={type} onPress={() => setComplaintType(type)}
-                    style={[styles.complaintType, complaintType === type && styles.complaintTypeActive]}>
-                    <Text style={[styles.complaintTypeText, complaintType === type && { color: C.rose }]}>{type}</Text>
+                {COMPLAINT_TYPES.map(({ value, label }) => (
+                  <TouchableOpacity key={value} onPress={() => setComplaintType(value)}
+                    style={[styles.complaintType, complaintType === value && styles.complaintTypeActive]}>
+                    <Text style={[styles.complaintTypeText, complaintType === value && { color: C.rose }]}>{label}</Text>
                   </TouchableOpacity>
                 ))}
               </View>

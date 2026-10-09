@@ -6,60 +6,48 @@ import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import {useAuth} from '../../context/AuthContext';
 import {Badge, Card} from '../../components/UI';
-import {emitDriverOnline, emitDriverLocation, onIncomingRide, offEvent} from '../../services/socket';
-import {rideAPI} from '../../services/api';
+import {emitDriverLocation, onIncomingRide, offEvent} from '../../services/socket';
+import {driverAPI} from '../../services/api';
 import {C, GRAD} from '../../utils/theme';
 
 export default function DriverHomeScreen({navigation}) {
   const {user, logout} = useAuth();
   const [isOnline,     setIsOnline]     = useState(false);
   const [tab,          setTab]          = useState('home');
-  const [activeRide,   setActiveRide]   = useState(null);
   const locationIntervalRef = useRef(null);
 
-  // Listen for incoming ride requests via socket
+  // Listen for incoming ride requests via socket.
+  // Only open a request while this screen is showing — never mid-ride.
   useEffect(() => {
     onIncomingRide(incoming => {
-      navigation.navigate('DriverAcceptRide', {rideData: incoming});
+      if (navigation.isFocused()) navigation.navigate('DriverAcceptRide', {rideData: incoming});
     });
     return () => offEvent('ride:incoming');
   }, []);
 
-  // Start/stop GPS broadcasting when going online/offline
+  // Broadcast GPS every 5s while online (the ride screen sends ride-linked updates itself)
   useEffect(() => {
-    if (isOnline) {
-      // Emit location every 5 seconds
-      locationIntervalRef.current = setInterval(() => {
-        Geolocation.getCurrentPosition(
-          pos => {
-            emitDriverLocation(
-              user?._id,
-              [pos.coords.longitude, pos.coords.latitude],
-              activeRide?._id || null
-            );
-          },
-          () => {},
-          {enableHighAccuracy: true, timeout: 5000}
-        );
-      }, 5000);
-    } else {
-      if (locationIntervalRef.current) {
-        clearInterval(locationIntervalRef.current);
-        locationIntervalRef.current = null;
-      }
-    }
-    return () => {
-      if (locationIntervalRef.current) clearInterval(locationIntervalRef.current);
-    };
-  }, [isOnline, activeRide]);
+    if (!isOnline) return;
+    locationIntervalRef.current = setInterval(() => {
+      Geolocation.getCurrentPosition(
+        pos => emitDriverLocation([pos.coords.longitude, pos.coords.latitude], null),
+        () => {},
+        {enableHighAccuracy: true, timeout: 5000}
+      );
+    }, 5000);
+    return () => clearInterval(locationIntervalRef.current);
+  }, [isOnline]);
 
   const toggleOnline = async () => {
     const next = !isOnline;
-    setIsOnline(next);
-    emitDriverOnline(user?._id, next);
-    try { await rideAPI.toggleOnline(next); } catch (_) {}
-    Alert.alert(next ? '🟢 You are Online' : '🔴 You are Offline',
-      next ? 'You will now receive ride requests.' : 'You will not receive ride requests.');
+    try {
+      const res = await driverAPI.setOnline(next);
+      setIsOnline(res.isOnline);
+      Alert.alert(res.isOnline ? '🟢 You are Online' : '🔴 You are Offline',
+        res.isOnline ? 'You will now receive ride requests.' : 'You will not receive ride requests.');
+    } catch (err) {
+      Alert.alert('Could Not Update Status', err.response?.data?.message || 'Server error. Please try again.');
+    }
   };
 
   const FEATURES = [
@@ -102,9 +90,9 @@ export default function DriverHomeScreen({navigation}) {
           {/* Stats Row */}
           <View style={styles.statsRow}>
             {[
-              {lbl:'Rating',  val:`${(user?.averageRating||4.9).toFixed(1)} ⭐`},
+              {lbl:'Rating',  val: user?.totalRatings ? `${user.averageRating.toFixed(1)} ⭐` : 'New'},
               {lbl:'Rides',   val: user?.totalRides   || 0},
-              {lbl:'Balance', val:`Rs.${(user?.totalEarnings||3740).toLocaleString()}`},
+              {lbl:'Balance', val:`Rs.${(user?.totalEarnings||0).toLocaleString()}`},
             ].map(s => (
               <View key={s.lbl} style={styles.statBox}>
                 <Text style={styles.statVal}>{s.val}</Text>

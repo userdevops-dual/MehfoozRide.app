@@ -8,12 +8,18 @@ const api = axios.create({
   timeout: 10000,
 });
 
+// Current JWT — set by AuthContext on login / signup / session restore
+let authToken = null;
+export const setAuthToken = (token) => { authToken = token; };
+export const getAuthToken = () => authToken;
+
 // Add auth token to every request
 api.interceptors.request.use((config) => {
-  const token = global.authToken;
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  if (authToken) config.headers.Authorization = `Bearer ${authToken}`;
   return config;
 });
+
+export default api;
 
 // ── Auth API ──────────────────────────────────────────────────────────────
 export const authAPI = {
@@ -21,7 +27,8 @@ export const authAPI = {
   login:         (data)   => api.post('/auth/login',  data).then(r => r.data),
   getMe:         ()       => api.get('/auth/me').then(r => r.data),
   updateProfile: (data)   => api.put('/auth/update-profile', data).then(r => r.data),
-  changePassword:(data)   => api.put('/auth/change-password', data).then(r => r.data),
+  changePassword:(currentPassword, newPassword) =>
+    api.put('/auth/change-password', { currentPassword, newPassword }).then(r => r.data),
   // NEW: CNIC verification
   verifyCNIC:    (cnic)   => api.post('/auth/verify-cnic', { cnic }).then(r => r.data),
 };

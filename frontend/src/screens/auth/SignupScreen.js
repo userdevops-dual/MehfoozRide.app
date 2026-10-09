@@ -56,10 +56,9 @@ export default function SignupScreen({ navigation }) {
       setCnicStatus(res.cnicVerified ? 'verified' : 'failed');
       if (res.cnicVerified) Alert.alert('✅ CNIC Verified', 'Female identity confirmed!');
       else Alert.alert('Failed', res.message || 'CNIC not verified');
-    } catch (_) {
-      // Demo fallback — always pass
-      setCnicStatus('verified');
-      Alert.alert('✅ CNIC Verified (Demo)', 'Female identity confirmed.');
+    } catch (err) {
+      setCnicStatus('failed');
+      Alert.alert('CNIC Not Verified', err.response?.data?.message || 'Could not reach the verification server. Please try again.');
     }
     setCnicLoading(false);
   };
@@ -162,12 +161,9 @@ export default function SignupScreen({ navigation }) {
   const handleSignup = async () => {
     setLoading(true);
     try {
+      // On success AppNavigator remounts on the role's home screen
       const res = await signup({ ...form, gender: 'female', selfieUri });
-      if (res.success) {
-        navigation.replace(res.user.role === 'driver' ? 'DriverHome' : 'PassengerHome');
-      } else {
-        Alert.alert('Signup Failed', res.message);
-      }
+      if (!res.success) Alert.alert('Signup Failed', res.message);
     } catch (err) {
       Alert.alert('Error', err.response?.data?.message || 'Server error. Check your backend is running.');
     }

@@ -1,5 +1,5 @@
 // src/screens/driver/DriverAcceptRideScreen.js
-// Driver ride: Accept → Arrive → OTP (with fake-ride detection) → In Progress → Complete
+// Driver ride: Review → Accept → Arrive → OTP (with fake-ride detection) → In Progress → Complete
 // NEW: Same-gender passenger verification dialog
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -8,14 +8,17 @@ import {
   Alert, TextInput, ActivityIndicator, Modal,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import Geolocation from '@react-native-community/geolocation';
 import { rideAPI } from '../../services/api';
 import {
   emitRideAccepted, emitDriverArrived, emitOTPVerified, emitRideCompleted, emitOTPFailed,
+  emitDriverLocation,
 } from '../../services/socket';
 import { C, GRAD } from '../../utils/theme';
 
 const STEPS = ['accepted', 'arrived', 'otp_verified', 'in_progress', 'completed'];
 const STEP_LABELS = {
+  incoming:     { label: 'New Ride Request',    icon: '🔔',  color: C.gold    },
   accepted:     { label: 'Navigate to Pickup',  icon: '🗺️',  color: C.info    },
   arrived:      { label: 'Gender Verification', icon: '🔐',  color: C.plum    },
   otp_verified: { label: 'Ride In Progress',    icon: '🚗',  color: C.success },
@@ -23,20 +26,24 @@ const STEP_LABELS = {
   completed:    { label: 'Ride Completed!',     icon: '✅',  color: C.success },
 };
 
+const errorMessage = (err) => err?.response?.data?.message || 'Server error. Check your connection and try again.';
+
 export default function DriverAcceptRideScreen({ navigation, route }) {
   const rideRequest = route?.params?.rideData || route?.params?.rideRequest || {};
+  const rideId = rideRequest?.rideId;
 
-  const [rideStatus,       setRideStatus]       = useState('accepted');
+  const [rideStatus,       setRideStatus]       = useState('incoming');
   const [otp,              setOtp]              = useState('');
   const [loading,          setLoading]          = useState(false);
   const [rideTime,         setRideTime]         = useState(0);
-  const [rideId,           setRideId]           = useState(rideRequest?.rideId || 'demo');
-  const [passengerId,      setPassengerId]       = useState(rideRequest?.passengerId || 'demo');
   const [otpFailures,      setOtpFailures]      = useState(0);
   const [showGenderCheck,  setShowGenderCheck]  = useState(false);
+  const [finalFare,        setFinalFare]        = useState(null);
   const timer = useRef(null);
 
-  useEffect(() => { acceptRideOnServer(); }, []);
+  useEffect(() => {
+    if (!rideId) navigation.replace('DriverHome');
+  }, []);
 
   useEffect(() => {
     if (rideStatus === 'in_progress') {
@@ -45,26 +52,47 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
     return () => clearInterval(timer.current);
   }, [rideStatus]);
 
+  // ── Live location linked to this ride (passenger tracking + route deviation) ──
+  useEffect(() => {
+    if (!['accepted', 'arrived', 'in_progress'].includes(rideStatus)) return;
+    const sendLocation = () => Geolocation.getCurrentPosition(
+      pos => emitDriverLocation([pos.coords.longitude, pos.coords.latitude], rideId),
+      () => {},
+      { enableHighAccuracy: true, timeout: 5000 }
+    );
+    sendLocation();
+    const interval = setInterval(sendLocation, 5000);
+    return () => clearInterval(interval);
+  }, [rideStatus]);
+
   const fmt = s => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
-  const acceptRideOnServer = async () => {
+  const handleAccept = async () => {
+    setLoading(true);
     try {
-      const res = await rideAPI.accept(rideId);
-      if (res.success) {
-        setPassengerId(res.ride?.passenger?._id || passengerId);
-        emitRideAccepted(rideId, 'driver_id', passengerId);
-      }
-    } catch (_) {}
+      await rideAPI.accept(rideId);
+      emitRideAccepted(rideId);
+      setRideStatus('accepted');
+    } catch (err) {
+      Alert.alert('Could Not Accept', errorMessage(err), [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    }
+    setLoading(false);
   };
 
   const handleArrived = async () => {
     setLoading(true);
-    try { await rideAPI.arrived(rideId); } catch (_) {}
-    emitDriverArrived(passengerId);
-    setRideStatus('arrived');
+    try {
+      await rideAPI.arrived(rideId);
+      emitDriverArrived(rideId);
+      setRideStatus('arrived');
+      // ── Show same-gender verification dialog ──────────────────────────────
+      setTimeout(() => setShowGenderCheck(true), 500);
+    } catch (err) {
+      Alert.alert('Error', errorMessage(err));
+    }
     setLoading(false);
-    // ── Show same-gender verification dialog ──────────────────────────────
-    setTimeout(() => setShowGenderCheck(true), 500);
   };
 
   const handleGenderConfirm = (confirmed) => {
@@ -73,7 +101,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
       // Passenger gender mismatch — cancel ride for safety
       Alert.alert(
         '🚫 Gender Mismatch',
-        'You have confirmed the passenger does NOT appear to be female.\n\nThis ride has been cancelled for safety. This incident will be reviewed by the safety team.',
+        'You have confirmed the passenger does NOT appear to be female.\n\nThis ride will be cancelled for safety and reviewed by the safety team.',
         [
           {
             text: 'Cancel Ride',
@@ -81,10 +109,12 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
             onPress: async () => {
               try {
                 await rideAPI.cancel(rideId, 'Gender identity mismatch — passenger did not appear to be female');
-              } catch (_) {}
-              Alert.alert('Ride Cancelled', 'Safety team has been notified.', [
-                { text: 'OK', onPress: () => navigation.replace('DriverHome') },
-              ]);
+                Alert.alert('Ride Cancelled', 'Safety team has been notified.', [
+                  { text: 'OK', onPress: () => navigation.replace('DriverHome') },
+                ]);
+              } catch (err) {
+                Alert.alert('Could Not Cancel', errorMessage(err));
+              }
             },
           },
         ]
@@ -100,34 +130,26 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
     }
     setLoading(true);
     try {
-      const res = await rideAPI.verifyOTP(rideId, otp);
-      if (res.success) {
-        emitOTPVerified(passengerId, rideId);
-        setRideStatus('in_progress');
-        setOtpFailures(0);
+      await rideAPI.verifyOTP(rideId, otp);
+      emitOTPVerified(rideId);
+      setRideStatus('in_progress');
+      setOtpFailures(0);
+    } catch (err) {
+      const data = err?.response?.data;
+      if (!data) {
+        // Network problem — the OTP was NOT verified, so the ride must not start
+        Alert.alert('Connection Error', 'Could not reach the server. The ride has not started — please try again.');
       } else {
-        const newFailures = otpFailures + 1;
-        setOtpFailures(newFailures);
-        emitOTPFailed(rideId, passengerId, newFailures);
+        if (data.failureCount) setOtpFailures(data.failureCount);
+        emitOTPFailed(rideId);
 
-        if (res.rideCancelled) {
-          Alert.alert(
-            '🚨 Ride Cancelled',
-            res.message,
-            [{ text: 'OK', onPress: () => navigation.replace('DriverHome') }]
-          );
-          return;
+        if (data.rideCancelled) {
+          Alert.alert('🚨 Ride Cancelled', data.message, [
+            { text: 'OK', onPress: () => navigation.replace('DriverHome') },
+          ]);
+        } else {
+          Alert.alert('Wrong OTP', data.message || 'Ask the passenger for the correct code.');
         }
-
-        Alert.alert('Wrong OTP', res.message || `Wrong OTP (${newFailures}/3). Ask passenger for correct code.`);
-      }
-    } catch (e) {
-      // Demo fallback
-      if (otp.length === 4) {
-        emitOTPVerified(passengerId, rideId);
-        setRideStatus('in_progress');
-      } else {
-        Alert.alert('Wrong OTP', "Please ask the passenger for their 4-digit code.");
       }
     }
     setLoading(false);
@@ -141,12 +163,12 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
           setLoading(true);
           try {
             const res = await rideAPI.complete(rideId);
-            const fare = res.ride?.actualFare || rideRequest?.estimatedFare || 280;
-            emitRideCompleted(passengerId, rideId, fare);
-          } catch (_) {
-            emitRideCompleted(passengerId, rideId, rideRequest?.estimatedFare || 280);
+            setFinalFare(res.ride?.actualFare ?? null);
+            emitRideCompleted(rideId);
+            setRideStatus('completed');
+          } catch (err) {
+            Alert.alert('Could Not Complete', errorMessage(err));
           }
-          setRideStatus('completed');
           setLoading(false);
         },
       },
@@ -168,7 +190,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
           <View style={styles.doneRow}>
             <Text style={styles.doneLbl}>Earned</Text>
             <Text style={[styles.doneVal, { color: '#fff', fontSize: 22, fontWeight: '800' }]}>
-              Rs. {rideRequest?.estimatedFare || 280}
+              Rs. {finalFare ?? rideRequest?.estimatedFare}
             </Text>
           </View>
           {rideRequest?.isPooled && (
@@ -277,7 +299,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
           <View style={styles.paxRow}>
             <View style={styles.paxAvatar}><Text style={{ fontSize: 28 }}>👩</Text></View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.paxName}>{rideRequest?.passengerName || 'Zainab Qureshi'}</Text>
+              <Text style={styles.paxName}>{rideRequest?.passengerName || "Passenger"}</Text>
               <Text style={styles.paxMood}>
                 {rideRequest?.moodPreference === 'quiet' ? '🤫 Quiet ride preferred' : rideRequest?.moodPreference === 'friendly' ? '😊 Friendly ride' : '💬 Talkative ride'}{}
               </Text>
@@ -288,7 +310,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
               )}
             </View>
             <View style={{ alignItems: 'flex-end' }}>
-              <Text style={styles.fareAmt}>Rs. {rideRequest?.estimatedFare || 280}</Text>
+              <Text style={styles.fareAmt}>Rs. {rideRequest?.estimatedFare}</Text>
               {rideRequest?.isPooled && (
                 <Text style={{ fontSize: 10, color: C.success, fontWeight: '600' }}>
                   Rs. {rideRequest?.farePerPassenger || 140}/pax
@@ -309,6 +331,22 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
             </View>
           </View>
         </View>
+
+        {/* Step 0: Review the request — accept or decline */}
+        {rideStatus === 'incoming' && (
+          <View style={styles.actionBox}>
+            <Text style={styles.actionTitle}>🔔 New ride request</Text>
+            <Text style={styles.actionDesc}>Review the pickup, destination and fare above, then accept or decline.</Text>
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity onPress={() => navigation.goBack()} style={[styles.actionBtn, { flex: 1, backgroundColor: C.muted }]} disabled={loading}>
+                <Text style={styles.actionBtnText}>Decline</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleAccept} style={[styles.actionBtn, { flex: 2, backgroundColor: C.success }]} disabled={loading}>
+                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>✓ Accept Ride</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* Step 1: Arrived */}
         {rideStatus === 'accepted' && (
@@ -353,9 +391,6 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
                 {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>Verify →</Text>}
               </TouchableOpacity>
             </View>
-            <Text style={{ fontSize: 11, color: C.muted, marginTop: 8, textAlign: 'center' }}>
-              (Demo: use OTP 7842 if testing without backend)
-            </Text>
           </View>
         )}
 
@@ -373,7 +408,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
               {[
                 { ico: '⏱️', lbl: 'Time',     val: fmt(rideTime) },
                 { ico: '📍', lbl: 'Distance', val: `${rideRequest?.distanceKm || 7.2} km` },
-                { ico: '💰', lbl: 'Earning',  val: `Rs.${rideRequest?.estimatedFare || 280}` },
+                { ico: '💰', lbl: 'Earning',  val: `Rs.${rideRequest?.estimatedFare}` },
               ].map(stat => (
                 <View key={stat.lbl} style={styles.liveStat}>
                   <Text style={{ fontSize: 20, marginBottom: 4 }}>{stat.ico}</Text>

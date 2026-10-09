@@ -61,12 +61,7 @@ export default function GuardianSetupScreen({ navigation }) {
         ]);
       }
     } catch (e) {
-      // Demo mode
-      const activeContacts = filled.map(c => ({ ...c, isActive: guardianOn }));
-      updateUser({ guardianContacts: activeContacts });
-      Alert.alert('Saved!', 'Guardian contacts saved.', [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      Alert.alert('Not Saved', `${e.response?.data?.message || 'Server error.'}\n\nYour guardians will NOT be notified until this is saved. Please try again.`);
     }
     setSaving(false);
   };

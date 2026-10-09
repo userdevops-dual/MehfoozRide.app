@@ -35,10 +35,7 @@ export default function ProfileScreen({ navigation }) {
         Alert.alert('✅ Saved', 'Your profile has been updated.');
       }
     } catch (err) {
-      // Demo mode — just update locally
-      updateUser({ name: name.trim(), phone: phone.trim() });
-      setEditing(false);
-      Alert.alert('✅ Saved', 'Profile updated (demo mode).');
+      Alert.alert('Error', err?.response?.data?.message || 'Could not update profile.');
     } finally {
       setLoading(false);
     }
