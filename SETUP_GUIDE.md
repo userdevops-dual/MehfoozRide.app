@@ -1,128 +1,119 @@
-# 🛡️ Mehfooz Ride — Complete Setup & FYP Presentation Guide
+# 🛡️ Mehfooz Ride — Setup & FYP Presentation Guide
 
-## What This Project Does
-Women-only ride hailing app built with React Native (mobile) + Node.js/Express (backend) + MongoDB.
-
----
-
-## ✅ All Features Implemented
-
-| Feature | Status | File |
-|---------|--------|------|
-| CNIC Verification Simulation | ✅ Complete | authController.js |
-| Phone OTP Verification | ✅ Complete | authController.js |
-| Same-Gender Pickup Verification | ✅ Complete | DriverAcceptRideScreen.js |
-| OTP Ride Start + Fake Ride Detection | ✅ Complete | rideController.js |
-| Live Fare Calculation | ✅ Complete | ActiveRideScreen.js |
-| Route Deviation → Guardian Alert | ✅ Complete | socket.js |
-| Guardian Auto-Sharing (ride start/end) | ✅ Complete | socket.js + rideController.js |
-| Ride Pooling + Fare Split | ✅ Complete | rideController.js |
-| Driver Background Check | ✅ Complete | adminRoutes.js |
-| Admin Dashboard | ✅ Complete | AdminDriverApprovalScreen.js |
-| SOS System | ✅ Complete | SOSScreen.js |
-| Fake Call Feature | ✅ Complete | FakeCallScreen.js |
-| Safe Points Map | ✅ Complete | SafePointsScreen.js |
-| 5-Category Driver Rating | ✅ Complete | RideCompleteScreen.js |
-| Guardian Mode Setup | ✅ Complete | GuardianSetupScreen.js |
+Women-only ride-hailing app for Lahore, Pakistan.
+**Mobile app:** React Native + Expo (Android) · **Backend:** Node.js / Express / Socket.IO · **Database:** MongoDB
 
 ---
 
-## 🚀 Quick Start (Step by Step)
+## 1. Requirements (one-time)
 
-### Step 1: Install MongoDB
-Download from https://www.mongodb.com/try/download/community
-Start it: `mongod`
+| Tool | Version | Install |
+|------|---------|---------|
+| Node.js | LTS (v20+) | `winget install OpenJS.NodeJS.LTS` or https://nodejs.org |
+| Java JDK | **17** (not 21/25) | `winget install EclipseAdoptium.Temurin.17.JDK` |
+| Android Studio | latest | https://developer.android.com/studio |
+| MongoDB | Atlas free cluster or local | https://cloud.mongodb.com |
 
-### Step 2: Start Backend
-```bash
-cd mehfooz-backend
-npm install
-npm run seed        ← Creates all 11 demo accounts
-npm run dev         ← Starts backend on port 5000
+**Android Studio → More Actions → SDK Manager → SDK Tools**, tick and apply:
+Android SDK Build-Tools · Android SDK Command-line Tools · Android Emulator · Android SDK Platform-Tools.
+Then **Virtual Device Manager → Create Device → Pixel 8** and start it.
+
+**Environment variables** (Windows, then open a *new* terminal):
+
+```bat
+setx JAVA_HOME "C:\Program Files\Eclipse Adoptium\jdk-17.<version>-hotspot"
+setx ANDROID_HOME "%LOCALAPPDATA%\Android\Sdk"
 ```
 
-### Step 3: Start Mobile App
-```bash
-# In root folder
-npm install
-npx react-native start      ← Metro bundler
-npx react-native run-android ← OR run-ios
-```
+> Java 25 (bundled with recent Android Studio) breaks the React Native native build with
+> `WARNING: A restricted method in java.lang.System has been called`. Use JDK 17.
+
+No Google Maps key is needed — maps use **OpenStreetMap** (Leaflet in a WebView).
 
 ---
 
-## 👥 Demo Accounts (11 total for FYP presentation)
+## 2. Backend
+
+```bash
+cd backend
+npm install
+copy .env.example .env      # then edit .env — set MONGO_URI and a long random JWT_SECRET
+npm run seed                # creates the 11 demo accounts (deletes old demo accounts first)
+npm start                   # http://localhost:5000
+```
+
+Generate a JWT secret: `node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"`
+
+The server refuses to start if `MONGO_URI` or `JWT_SECRET` is missing. **Never commit `backend/.env`** (it is git-ignored).
+
+---
+
+## 3. Mobile app (Android)
+
+Keep the backend running and the emulator open. In the project root:
+
+```bash
+npm install
+npx expo run:android        # first build ~15–25 min, later builds are faster
+```
+
+After the first build, for JavaScript-only changes: `npx expo start`, then press `a` (or `r` to reload).
+
+**Backend address:** `frontend/src/services/api.js` → `BACKEND_URL`
+- Emulator: `http://10.0.2.2:5000` (default)
+- Real phone on the same Wi-Fi: `http://<your-PC-IPv4>:5000` (find it with `ipconfig`) and allow port 5000 in Windows Firewall.
+
+---
+
+## 4. Demo accounts
 
 | Role | Email | Password |
 |------|-------|----------|
 | Admin | admin@mehfooz.com | admin123 |
-| Passenger 1 | ayesha@demo.com | password123 |
-| Passenger 2 | zainab@demo.com | password123 |
-| Passenger 3 | sana@demo.com | password123 |
-| Passenger 4 | hira@demo.com | password123 |
-| Passenger 5 | nadia@demo.com | password123 |
-| Driver 1 | fatima@demo.com | password123 |
-| Driver 2 | mariam@demo.com | password123 |
-| Driver 3 | sara@demo.com | password123 |
-| Driver 4 | amna@demo.com | password123 |
-| Driver 5 | rabia@demo.com | password123 |
+| Passengers | ayesha@ · zainab@ · sana@ · hira@ · nadia@ `demo.com` | password123 |
+| Drivers | fatima@ · mariam@ · sara@ · amna@ · rabia@ `demo.com` | password123 |
+
+The login screen has quick-fill buttons for one passenger, one driver and the admin.
 
 ---
 
-## 🎓 FYP Presentation Flow (2 devices / 2 browser tabs)
+## 5. Demo flow (needs two devices — e.g. two emulators, or emulator + phone)
 
-### Device/Tab 1 — Passenger Side
-1. Login as `ayesha@demo.com`
-2. Set guardian contacts (GuardianSetup screen)
-3. Book a ride → enter pickup + dropoff
-4. See "Finding Driver" screen
-5. Get matched with driver — OTP shown
-6. Show live fare updating during ride
-7. Route deviation alert appears if driver deviates
-8. SOS button always visible
-9. After ride: rate driver on 5 categories
+| Step | Device | Screen |
+|------|--------|--------|
+| 1 | Driver (`fatima@demo.com`) | Driver Home → tap **Online** |
+| 2 | Passenger (`ayesha@demo.com`) | Home → *Search your destination* → **Book Ride** |
+| 3 | Passenger | **Finding Your Safe Driver** (searches up to 2 min, can cancel) |
+| 4 | Driver | **New Ride Request** opens automatically → **Accept** |
+| 5 | Passenger | **Driver Found** — driver, plate, 4-digit **OTP** |
+| 6 | Driver | **I've Arrived** → same-gender check → enter passenger's OTP |
+| 7 | Passenger | Active ride — live map, live fare, SOS, Fake Call, Safe Drop |
+| 8 | Driver | **Complete Ride** |
+| 9 | Passenger | Rate driver (5 categories) / report a complaint |
 
-### Device/Tab 2 — Driver Side
-1. Login as `fatima@demo.com`
-2. Go Online (toggle switch)
-3. See incoming ride request notification
-4. Accept ride → same-gender verification popup appears
-5. Confirm female passenger / cancel on mismatch
-6. Arrive at pickup → Enter passenger OTP
-7. OTP wrong 3x → ride auto-cancels (fake ride detection)
-8. OTP correct → ride starts
-9. Complete ride
-
-### Tab 3 — Admin (optional)
-1. Login as `admin@mehfooz.com`
-2. See all pending driver approvals
-3. Run background check → approve/reject
-4. Monitor live rides
-5. View SOS incidents
-6. View fake ride detections
+Wrong OTP 3 times → ride auto-cancels and is flagged as a possible fake ride.
+Admin panel: driver approvals, background checks, SOS incidents, fake rides, live rides, stats.
 
 ---
 
-## 📱 Running Two Sessions (FYP Demo Trick)
+## 6. What is simulated (say so in the presentation)
 
-**Android emulator + physical phone:**
-- Run app on emulator → login as driver
-- Run app on phone → login as passenger
-- Both connect to same backend → socket events work in real time
-
-**Two browser tabs (if using Expo web):**
-- Tab 1: passenger@demo.com
-- Tab 2: driver@demo.com
-
-**Backend URL for real device:**
-Change `10.0.2.2` to your PC's local IP in `frontend/src/services/api.js`:
-```js
-export const BACKEND_URL = 'http://192.168.1.X:5000';
-```
-Find your IP: `ipconfig` (Windows) or `ifconfig` (Mac/Linux)
+- **CNIC gender check** — last digit even = female (NADRA rule); not checked against NADRA.
+- **Selfie / face match** — selfie is captured but not compared.
+- **Phone OTP** — any 6 digits are accepted (`123456` in demo); no SMS is sent.
+- **Guardian SMS** — messages are printed in the backend console, not actually sent.
+- **Pickup / dropoff coordinates** — fixed DHA → Gulberg demo route on the booking screen.
 
 ---
 
-## 🔧 If Backend Not Running (Demo Mode)
-All screens have demo/fallback data built in.
-You can demo the full UI without a backend running.
+## 7. Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `npm` / `node` not recognized | Open a new terminal after installing Node.js |
+| `JAVA_HOME is not set` | Set `JAVA_HOME` to JDK 17 (section 1), open a new terminal |
+| `configureCMakeDebug FAILED` / restricted method warning | You are on Java 25 — switch to JDK 17 |
+| Gradle path error after moving the folder | Delete `android/app/.cxx` and `android/app/build`, or run `npx expo prebuild --clean` |
+| `Missing script: "seed"` | Run it inside the `backend` folder |
+| Map says *Map unavailable* | The emulator/phone has no internet |
+| Login fails / "Server error" | Backend not running, or wrong `BACKEND_URL` |

@@ -8,11 +8,11 @@
 | 2 | Passenger fields: Name, Email, Phone, CNIC, Password | ✅ |
 | 2 | Phone OTP via SMS (send + verify) | ✅ Demo=123456 / Twilio for live |
 | 2 | CNIC female filter (even digit=female, odd=male blocked) | ✅ |
-| 2 | Selfie capture + face verification (RNCamera) | ✅ |
+| 2 | Selfie capture (expo-camera) — face match simulated | ✅ |
 | 3 | Driver: License, Vehicle docs, Selfie | ✅ |
 | 3 | Admin approval before driver goes live | ✅ |
 | 3 | Background check checklist | ✅ |
-| 4 | Login with EMAIL or PHONE NUMBER | ✅ Toggle on login screen |
+| 4 | Login with EMAIL or PHONE NUMBER | ✅ Same field accepts email or phone |
 | 5 | Booking: pickup, destination, fare, ride type | ✅ |
 | 5 | Ride types: Economy 🚗 / AC Sedan ❄️ / Bike 🛵 | ✅ |
 | 6 | Driver confirms female passenger (modal) | ✅ |
@@ -24,8 +24,8 @@
 | 10 | Fare = Base(80) + Distance(×25) + Time(×5) | ✅ |
 | 11 | Driver Online / Offline toggle | ✅ |
 | 12 | Accept / Reject ride requests | ✅ |
-| 13 | Live GPS tracking (MapView + driver marker) | ✅ |
-| 14 | Route shown on map BEFORE ride (Polyline) | ✅ |
+| 13 | Live GPS tracking (OpenStreetMap + driver marker) | ✅ |
+| 14 | Route shown on map BEFORE ride (route line) | ✅ |
 | 15 | Route deviation monitoring + alert | ✅ |
 | 15 | Guardian notified on deviation | ✅ |
 | 16 | Mood: Quiet / Friendly / Talkative | ✅ |
