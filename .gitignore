@@ -22,3 +22,6 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Uploaded documents (CNIC photos) — private, never commit
+backend/uploads/

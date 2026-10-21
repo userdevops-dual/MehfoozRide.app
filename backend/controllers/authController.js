@@ -1,10 +1,20 @@
 // ─────────────────────────────────────────
 //  controllers/authController.js
-//  Handles: Signup, Login, Profile, CNIC Verification
+//  Handles: Phone OTP, CNIC check, Signup (with CNIC photos), Login, Profile
 // ─────────────────────────────────────────
 
-const User = require("../models/User");
-const jwt  = require("jsonwebtoken");
+const crypto   = require("crypto");
+const mongoose = require("mongoose");
+const jwt      = require("jsonwebtoken");
+const User     = require("../models/User");
+const PhoneOtp = require("../models/PhoneOtp");
+const config   = require("../config/appConfig");
+const storage  = require("../services/storage");
+const { getSmsProvider } = require("../services/sms");
+const { checkCNIC, normalizePhone, checkPassword, isEmail } = require("../utils/validation");
+
+const sha256 = (value) => crypto.createHash("sha256").update(String(value)).digest("hex");
+const minutesFromNow = (m) => new Date(Date.now() + m * 60 * 1000);
 
 // ── Helper: Generate JWT Token ────────────
 const generateToken = (id) => {
@@ -38,176 +48,269 @@ const sendTokenResponse = (user, statusCode, res) => {
   });
 };
 
-// ── Helper: Validate CNIC Format (Pakistani: 12345-6789012-3) ──
-const isValidCNIC = (cnic) => {
-  return /^\d{5}-\d{7}-\d{1}$/.test(cnic);
-};
-
-// ── CNIC Simulation: In production this calls NADRA/external API ──
-// For FYP demo, we simulate: valid format + 13 digits = verified female
-const verifyCNICSimulated = (cnic) => {
-  if (!cnic || !isValidCNIC(cnic)) {
-    return { verified: false, reason: "Invalid CNIC format. Use: 12345-6789012-3" };
-  }
-  // ── REAL Pakistani NADRA Gender Rule ──────────────────────────────────────
-  // Last digit of Pakistani CNIC encodes gender:
-  //   EVEN (0, 2, 4, 6, 8) = FEMALE ✅  allowed
-  //   ODD  (1, 3, 5, 7, 9) = MALE   ❌  blocked
-  //
-  // Female example: 35202-1234567-2  → last digit 2 (even) = FEMALE ✅
-  // Male example:   35202-1234567-1  → last digit 1 (odd)  = MALE   ❌
-  //
-  // In production: also verify CNIC is genuine via NADRA API
-  const lastDigit = parseInt(cnic.slice(-1));
-  const isFemale  = lastDigit % 2 === 0; // even = female
-
-  if (!isFemale) {
-    return {
-      verified: false,
-      reason: "❌ This CNIC belongs to a male identity (last digit is odd). MehfoozRide is women-only. Only female CNICs accepted (last digit must be even: 0, 2, 4, 6, 8).",
-    };
-  }
-  return {
-    verified: true,
-    gender: "female",
-    message: "✅ CNIC verified as female identity (last digit " + lastDigit + " is even = female)",
-  };
-};
-
 // ════════════════════════════════════════
 //  @route  POST /api/auth/verify-cnic
-//  @desc   Simulate CNIC verification (NADRA-style)
+//  @desc   Check CNIC format + female eligibility (instant feedback during signup;
+//          the same check is enforced again inside signup)
 //  @access Public
 // ════════════════════════════════════════
 exports.verifyCNIC = async (req, res) => {
+  const result = checkCNIC(req.body.cnic);
+  if (!result.valid || !result.eligible) {
+    return res.status(400).json({
+      success: false,
+      cnicVerified: false,
+      eligible: false,
+      reason: result.valid ? "not_eligible" : "invalid_format",
+      message: result.reason,
+    });
+  }
+  if (await User.exists({ cnic: result.formatted })) {
+    return res.status(400).json({ success: false, cnicVerified: false, reason: "already_registered", message: "This CNIC is already registered." });
+  }
+  res.status(200).json({
+    success: true,
+    cnicVerified: true,
+    eligible: true,
+    cnic: result.formatted,
+    message: "CNIC format is valid and eligible for registration.",
+  });
+};
+
+// ════════════════════════════════════════
+//  @route  POST /api/auth/send-otp
+//  @desc   Send a 6-digit code to a Pakistani mobile number
+//  @access Public
+// ════════════════════════════════════════
+exports.sendPhoneOTP = async (req, res) => {
   try {
-    const { cnic } = req.body;
-    if (!cnic) return res.status(400).json({ success: false, message: "CNIC is required" });
-
-    const result = verifyCNICSimulated(cnic);
-
-    if (!result.verified) {
-      return res.status(400).json({
-        success: false,
-        message: result.reason || "CNIC verification failed",
-        cnicVerified: false,
-      });
+    const phone = normalizePhone(req.body.phone);
+    if (!phone) {
+      return res.status(400).json({ success: false, message: "Enter a valid Pakistani mobile number, e.g. 03001234567." });
+    }
+    if (await User.exists({ phone })) {
+      return res.status(400).json({ success: false, message: "An account with this phone number already exists. Please sign in." });
     }
 
-    return res.status(200).json({
+    const existing = await PhoneOtp.findOne({ phone });
+    if (existing) {
+      const waitSeconds = Math.ceil((existing.lastSentAt.getTime() + config.otp.resendCooldownSeconds * 1000 - Date.now()) / 1000);
+      if (waitSeconds > 0) {
+        return res.status(429).json({ success: false, message: `Please wait ${waitSeconds}s before requesting a new code.`, retryAfterSeconds: waitSeconds });
+      }
+    }
+
+    const provider = getSmsProvider();
+    if (!provider.isReal && !config.DEMO_MODE) {
+      return res.status(503).json({ success: false, message: "SMS service is not configured. Contact support." });
+    }
+
+    // Demo provider uses the configured demo code; a real provider gets a random code
+    const code = provider.isReal
+      ? crypto.randomInt(0, 10 ** config.otp.length).toString().padStart(config.otp.length, "0")
+      : config.otp.demoCode;
+
+    await PhoneOtp.findOneAndUpdate(
+      { phone },
+      {
+        phone,
+        codeHash: sha256(`${phone}:${code}`),
+        expiresAt: minutesFromNow(config.otp.expiresMinutes),
+        attempts: 0,
+        lastSentAt: new Date(),
+        verified: false,
+        verificationTokenHash: null,
+        tokenExpiresAt: null,
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    try {
+      await provider.sendOtp(phone, code);
+    } catch (err) {
+      console.error("SMS send error:", err.message);
+      return res.status(502).json({ success: false, message: "Could not send the SMS. Please try again." });
+    }
+
+    res.status(200).json({
       success: true,
-      message: result.message,
-      cnicVerified: true,
-      gender: result.gender,
+      phone,
+      expiresInSeconds: config.otp.expiresMinutes * 60,
+      resendInSeconds:  config.otp.resendCooldownSeconds,
+      demo: !provider.isReal,
+      ...(provider.isReal
+        ? { message: `A verification code was sent by SMS to ${phone}.` }
+        : { message: "Demo mode: no SMS was sent. Use the demo code shown.", demoOtp: code }),
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: "Verification server error" });
+    console.error("Send OTP error:", error.message);
+    res.status(500).json({ success: false, message: "Failed to send OTP" });
   }
 };
 
 // ════════════════════════════════════════
-//  @route  POST /api/auth/signup
-//  @desc   Register a new user (with CNIC check)
+//  @route  POST /api/auth/verify-phone-otp
+//  @desc   Check the code → returns a short-lived phoneVerificationToken for signup
+//  @access Public
+// ════════════════════════════════════════
+exports.verifyPhoneOTP = async (req, res) => {
+  try {
+    const phone = normalizePhone(req.body.phone);
+    const otp   = String(req.body.otp ?? "").trim();
+    if (!phone || !otp) return res.status(400).json({ success: false, message: "Phone number and code are required." });
+
+    const record = await PhoneOtp.findOne({ phone });
+    if (!record) return res.status(400).json({ success: false, message: "No code was requested for this number. Tap Send OTP." });
+    if (record.expiresAt < new Date()) {
+      return res.status(400).json({ success: false, message: "This code has expired. Request a new one.", expired: true });
+    }
+    if (record.attempts >= config.otp.maxAttempts) {
+      return res.status(429).json({ success: false, message: "Too many incorrect attempts. Request a new code.", locked: true });
+    }
+
+    if (record.codeHash !== sha256(`${phone}:${otp}`)) {
+      record.attempts += 1;
+      await record.save();
+      const left = config.otp.maxAttempts - record.attempts;
+      return res.status(400).json({
+        success: false,
+        message: left > 0 ? `Incorrect code. ${left} attempt${left === 1 ? "" : "s"} left.` : "Too many incorrect attempts. Request a new code.",
+        attemptsLeft: left,
+      });
+    }
+
+    const token = crypto.randomBytes(24).toString("hex");
+    record.verified = true;
+    record.verificationTokenHash = sha256(token);
+    record.tokenExpiresAt = minutesFromNow(config.otp.verificationTokenMinutes);
+    await record.save();
+
+    res.status(200).json({
+      success: true,
+      message: "✅ Phone verified successfully",
+      phone,
+      phoneVerified: true,
+      phoneVerificationToken: token,
+      tokenExpiresInSeconds: config.otp.verificationTokenMinutes * 60,
+    });
+  } catch (error) {
+    console.error("Verify OTP error:", error.message);
+    res.status(500).json({ success: false, message: "OTP verification error" });
+  }
+};
+
+// ════════════════════════════════════════
+//  @route  POST /api/auth/signup   (multipart/form-data)
+//  @desc   Register with verified phone, eligible CNIC and CNIC front/back photos
 //  @access Public
 // ════════════════════════════════════════
 exports.signup = async (req, res) => {
+  const savedKeys = [];
   try {
-    const { name, email, phone, password, role, cnic,
+    const { name, email, password, role, cnic, phoneVerificationToken,
             licenseNumber, vehicleMake, vehicleModel,
             vehicleYear, vehicleColor, licensePlate } = req.body;
+    const bad = (message, extra = {}) => res.status(400).json({ success: false, message, ...extra });
 
-    if (!name || !email || !phone || !password || !role) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide name, email, phone, password and role",
-      });
-    }
+    // ── Basic fields ─────────────────────
+    if (!name || String(name).trim().length < 2) return bad("Please enter your full name.");
+    if (!isEmail(email))                          return bad("Please enter a valid email address.");
+    if (!["passenger", "driver"].includes(role))  return bad("Role must be passenger or driver.");
+    const passwordError = checkPassword(password);
+    if (passwordError)                            return bad(passwordError);
 
-    if (!["passenger", "driver"].includes(role)) {
-      return res.status(400).json({ success: false, message: "Role must be passenger or driver" });
-    }
+    // ── CNIC: format + female eligibility (server-side, cannot be bypassed) ──
+    const cnicCheck = checkCNIC(cnic);
+    if (!cnicCheck.valid)    return bad(cnicCheck.reason, { cnicVerified: false });
+    if (!cnicCheck.eligible) return bad(cnicCheck.reason, { cnicVerified: false, reason: "not_eligible" });
 
-    // ── CNIC validation ──────────────────
-    if (!cnic || !isValidCNIC(cnic)) {
-      return res.status(400).json({
-        success: false,
-        message: "Valid CNIC is required. Format: 12345-6789012-3",
-      });
-    }
+    // ── Phone must have been verified by OTP ──
+    const phone = normalizePhone(req.body.phone);
+    if (!phone) return bad("Enter a valid Pakistani mobile number.");
+    const otpRecord = phoneVerificationToken && await PhoneOtp.findOne({
+      phone,
+      verified: true,
+      verificationTokenHash: sha256(phoneVerificationToken),
+      tokenExpiresAt: { $gt: new Date() },
+    });
+    if (!otpRecord) return bad("Phone number is not verified (or verification expired). Please verify it with OTP again.", { phoneVerified: false });
 
-    const cnicCheck = verifyCNICSimulated(cnic);
-    if (!cnicCheck.verified) {
-      return res.status(400).json({
-        success: false,
-        message: "CNIC verification failed: " + cnicCheck.reason,
-        cnicVerified: false,
-      });
-    }
+    // ── CNIC photos ──────────────────────
+    const front = req.files?.cnicFront?.[0];
+    const back  = req.files?.cnicBack?.[0];
+    if (!front || !back) return bad("Please upload both the front and back photos of your CNIC.");
 
-    // ── Check CNIC not already registered ─
-    const existingCNIC = await User.findOne({ cnic });
-    if (existingCNIC) {
-      return res.status(400).json({ success: false, message: "This CNIC is already registered" });
-    }
+    // ── Uniqueness ───────────────────────
+    const emailLower = String(email).trim().toLowerCase();
+    if (await User.exists({ cnic: cnicCheck.formatted })) return bad("This CNIC is already registered.");
+    if (await User.exists({ email: emailLower }))         return bad("An account with this email already exists.");
+    if (await User.exists({ phone }))                     return bad("An account with this phone number already exists.");
 
-    const existingEmail = await User.findOne({ email });
-    if (existingEmail) {
-      return res.status(400).json({ success: false, message: "An account with this email already exists" });
-    }
-
-    const existingPhone = await User.findOne({ phone });
-    if (existingPhone) {
-      return res.status(400).json({ success: false, message: "An account with this phone number already exists" });
-    }
+    // ── Save CNIC photos privately, then create the user ──
+    const userId = new mongoose.Types.ObjectId();
+    const extOf = (f) => ({ "image/png": ".png", "image/webp": ".webp" }[f.mimetype] || ".jpg");
+    const frontKey = await storage.save(`cnic/${userId}/front${extOf(front)}`, front.buffer); savedKeys.push(frontKey);
+    const backKey  = await storage.save(`cnic/${userId}/back${extOf(back)}`,  back.buffer);  savedKeys.push(backKey);
 
     const userData = {
-      name, email, phone, password, role, cnic,
-      gender: "female",
+      _id: userId,
+      name: String(name).trim(), email: emailLower, phone, password, role,
+      cnic: cnicCheck.formatted,
+      gender: "female",                 // decided by the CNIC rule above, never by the client
       cnicVerified: true,
-      isVerified: role === "passenger",
+      cnicVerificationStatus: "verified",
+      cnicVerificationNote: "Format and female eligibility checked at signup (NADRA check not integrated)",
+      cnicImages: { front: frontKey, back: backKey, uploadedAt: new Date() },
+      phoneVerifiedAt: new Date(),
+      isVerified: role === "passenger",  // drivers wait for admin approval
     };
 
     if (role === "driver") {
       userData.driverDetails = {
-        cnicNumber: cnic,
-        licenseNumber:    licenseNumber    || "",
-        vehicleMake:      vehicleMake      || "",
-        vehicleModel:     vehicleModel     || "",
-        vehicleYear:      vehicleYear      || "",
-        vehicleColor:     vehicleColor     || "",
-        licensePlate:     licensePlate     || "",
-        backgroundCheck:  "pending",
-        backgroundNotes:  "",
+        cnicNumber:      cnicCheck.formatted,
+        licenseNumber:   licenseNumber  || "",
+        vehicleMake:     vehicleMake    || "",
+        vehicleModel:    vehicleModel   || "",
+        vehicleYear:     vehicleYear    || "",
+        vehicleColor:    vehicleColor   || "",
+        licensePlate:    licensePlate   || "",
+        backgroundCheck: "pending",
+        backgroundNotes: "",
       };
     }
 
     const user = await User.create(userData);
+    await PhoneOtp.deleteOne({ _id: otpRecord._id }); // token is single-use
     sendTokenResponse(user, 201, res);
 
   } catch (error) {
+    // Don't leave orphaned CNIC photos behind if the account was not created
+    await Promise.all(savedKeys.map(k => storage.remove(k).catch(() => {})));
     console.error("Signup error:", error.message);
-    res.status(500).json({ success: false, message: "Server error during signup", error: error.message });
+    res.status(500).json({ success: false, message: "Server error during signup. Please try again." });
   }
 };
 
 // ════════════════════════════════════════
-//  @route  POST /api/auth/login
+//  @route  POST /api/auth/login   (email or phone)
 // ════════════════════════════════════════
 exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
-      return res.status(400).json({ success: false, message: "Please provide email and password" });
+      return res.status(400).json({ success: false, message: "Please provide email/phone and password" });
     }
 
-    // Accept login by email OR phone number
-    const user = await User.findOne(
-      email.includes('@') ? { email } : { phone: email }
-    ).select("+password");
-    if (!user) return res.status(401).json({ success: false, message: "Invalid credentials. Check email/phone and password." });
+    // Accept login by email OR phone number (any common Pakistani format)
+    const identifier = String(email).trim();
+    const query = identifier.includes("@")
+      ? { email: identifier.toLowerCase() }
+      : { phone: normalizePhone(identifier) || identifier };
+    const user = await User.findOne(query).select("+password");
+    if (!user) return res.status(401).json({ success: false, message: "Invalid email/phone or password." });
 
     const isMatch = await user.matchPassword(password);
-    if (!isMatch) return res.status(401).json({ success: false, message: "Invalid email or password" });
+    if (!isMatch) return res.status(401).json({ success: false, message: "Invalid email/phone or password." });
 
     if (user.isSuspended) {
       return res.status(403).json({
@@ -246,9 +349,11 @@ exports.updateProfile = async (req, res) => {
     const updates = {};
     if (name !== undefined)  updates.name = name;
     if (phone !== undefined) {
-      const taken = await User.exists({ phone, _id: { $ne: req.user.id } });
+      const normalized = normalizePhone(phone);
+      if (!normalized) return res.status(400).json({ success: false, message: "Enter a valid Pakistani mobile number." });
+      const taken = await User.exists({ phone: normalized, _id: { $ne: req.user.id } });
       if (taken) return res.status(400).json({ success: false, message: "This phone number is already in use" });
-      updates.phone = phone;
+      updates.phone = normalized;
     }
     if (guardianContacts !== undefined) {
       if (!Array.isArray(guardianContacts)) {
@@ -276,66 +381,16 @@ exports.updateProfile = async (req, res) => {
 exports.changePassword = async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
+    const passwordError = checkPassword(newPassword);
+    if (passwordError) return res.status(400).json({ success: false, message: passwordError });
+
     const user = await User.findById(req.user.id).select("+password");
-    const isMatch = await user.matchPassword(currentPassword);
+    const isMatch = await user.matchPassword(currentPassword || "");
     if (!isMatch) return res.status(400).json({ success: false, message: "Current password is incorrect" });
     user.password = newPassword;
     await user.save();
     res.status(200).json({ success: true, message: "Password changed successfully" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
-  }
-};
-
-// ════════════════════════════════════════
-//  @route  POST /api/auth/send-otp
-//  @desc   Send OTP to phone (Twilio in production, demo simulation here)
-//  @access Public
-// ════════════════════════════════════════
-exports.sendPhoneOTP = async (req, res) => {
-  try {
-    const { phone } = req.body;
-    if (!phone) return res.status(400).json({ success: false, message: 'Phone number is required' });
-
-    // In production: use Twilio Verify API
-    // const client = require('twilio')(process.env.TWILIO_SID, process.env.TWILIO_TOKEN);
-    // await client.verify.services(process.env.TWILIO_SERVICE).verifications.create({ to: phone, channel: 'sms' });
-
-    // Demo: generate and log OTP (replace with Twilio in production)
-    const demoOTP = '123456';
-    console.log(`📱 OTP for ${phone}: ${demoOTP} (Demo — use Twilio in production)`);
-
-    res.status(200).json({
-      success: true,
-      message: `OTP sent to ${phone}`,
-      demo: true,
-      demoOTP: '123456', // remove in production
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to send OTP' });
-  }
-};
-
-// ════════════════════════════════════════
-//  @route  POST /api/auth/verify-phone-otp
-//  @desc   Verify phone OTP
-//  @access Public
-// ════════════════════════════════════════
-exports.verifyPhoneOTP = async (req, res) => {
-  try {
-    const { phone, otp } = req.body;
-    if (!phone || !otp) return res.status(400).json({ success: false, message: 'Phone and OTP required' });
-
-    // In production: use Twilio Verify check
-    // const check = await client.verify.services(sid).verificationChecks.create({ to: phone, code: otp });
-    // if (check.status !== 'approved') return res.status(400).json({ success: false, message: 'Invalid OTP' });
-
-    // Demo: accept any 6-digit code
-    if (otp.length === 6) {
-      return res.status(200).json({ success: true, message: '✅ Phone verified successfully', phoneVerified: true });
-    }
-    res.status(400).json({ success: false, message: 'Invalid OTP. Enter the 6-digit code.' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'OTP verification error' });
   }
 };

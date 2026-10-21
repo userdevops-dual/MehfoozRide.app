@@ -4,6 +4,7 @@ const router  = express.Router();
 const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const Ride = require('../models/Ride');
+const storage = require('../services/storage');
 
 router.use(protect);
 router.use(authorize('admin'));
@@ -202,6 +203,21 @@ router.get('/stats', async (req, res) => {
       },
     });
   } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+// GET /api/admin/users/:id/cnic/:side — view a CNIC photo (front | back), admins only.
+// Photos are stored privately and are never returned by any other endpoint.
+router.get('/users/:id/cnic/:side', async (req, res) => {
+  try {
+    const side = req.params.side;
+    if (!['front', 'back'].includes(side)) return res.status(400).json({ success: false, message: 'side must be front or back' });
+    const user = await User.findById(req.params.id).select(`+cnicImages.${side}`);
+    const key = user?.cnicImages?.[side];
+    if (!key) return res.status(404).json({ success: false, message: 'No CNIC photo on file' });
+    const file = await storage.read(key);
+    res.set('Cache-Control', 'no-store');
+    res.sendFile(file);
+  } catch (e) { res.status(404).json({ success: false, message: 'CNIC photo not found' }); }
 });
 
 // GET /api/admin/drivers/approved — all currently verified active drivers

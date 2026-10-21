@@ -5,8 +5,9 @@ const {
   verifyCNIC, sendPhoneOTP, verifyPhoneOTP,
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
+const { uploadCnicImages } = require('../middleware/upload');
 
-router.post('/signup',              signup);
+router.post('/signup',              uploadCnicImages, signup);   // multipart: fields + cnicFront + cnicBack
 router.post('/login',               login);
 router.post('/verify-cnic',         verifyCNIC);          // CNIC verification
 router.post('/send-otp',            sendPhoneOTP);        // Phone OTP (NEW)

@@ -17,6 +17,13 @@ const UserSchema = new mongoose.Schema(
     cnicVerified: { type: Boolean, default: false },
     cnicVerificationStatus: { type: String, enum: ['not_provided','verified','failed','skipped'], default: 'not_provided' },
     cnicVerificationNote: { type: String, default: '' },
+    // Private storage keys for the CNIC photos — never returned in API responses
+    cnicImages: {
+      front:      { type: String, default: '', select: false },
+      back:       { type: String, default: '', select: false },
+      uploadedAt: { type: Date },
+    },
+    phoneVerifiedAt: { type: Date },
 
     gender: {
       type: String,
