@@ -34,6 +34,18 @@ const RideSchema = new mongoose.Schema(
 
     distanceKm:      { type: Number, default: 0 },
     durationMinutes: { type: Number, default: 0 },
+    estimatedDurationMinutes: { type: Number, default: 0 },
+
+    // Route the passenger chose before booking (used for route monitoring).
+    // source "osrm" = real road route; "straight_line" = fallback when routing was unavailable.
+    preferredRoute: {
+      source:      { type: String, enum: ["osrm", "straight_line"], default: "straight_line" },
+      index:       { type: Number, default: 0 },
+      distanceKm:  { type: Number, default: 0 },
+      durationMin: { type: Number, default: 0 },
+      summary:     { type: String, default: "" },
+      coordinates: { type: [[Number]], default: undefined },   // [[lng, lat], ...]
+    },
 
     rideType: {
       type: String,

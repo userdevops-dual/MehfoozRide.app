@@ -1,8 +1,11 @@
 // src/screens/passenger/PassengerHome.js
-import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert } from 'react-native';
+import React, { useState, useRef, useCallback } from 'react';
+import { View, Text, TouchableOpacity, ScrollView, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import { useFocusEffect } from '@react-navigation/native';
 import { useAuth } from '../../context/AuthContext';
+import OSMMap from '../../components/OSMMap';
+import { watchLocation, openLocationSettings, LocationError, LOW_ACCURACY_METERS } from '../../services/location';
 import { Badge } from '../../components/UI';
 import { C, GRAD } from '../../utils/theme';
 
@@ -10,11 +13,26 @@ export default function PassengerHome({ navigation }) {
   const { user, logout } = useAuth();
   const [tab, setTab] = useState('home');
 
-  const safePoints = [
-    { icon: '🏥', label: 'CMH 0.8km',    color: '#B52222', bg: C.dangerBg },
-    { icon: '👮', label: 'Police 1.2km', color: C.info,    bg: C.infoBg },
-    { icon: '🏪', label: 'Mall 0.5km',   color: C.success, bg: C.successBg },
-  ];
+  // Live GPS for the home map
+  const [myLoc,    setMyLoc]    = useState(null);
+  const [locError, setLocError] = useState(null);
+  const stopRef = useRef(null);
+
+  const startWatching = () => {
+    stopRef.current?.();
+    setLocError(null);
+    stopRef.current = watchLocation(({ coords, error }) => {
+      if (error) { setLocError(error); return; }
+      setLocError(null);
+      setMyLoc(coords);
+    });
+  };
+
+  // Track only while this screen is visible (saves battery)
+  useFocusEffect(useCallback(() => {
+    startWatching();
+    return () => stopRef.current?.();
+  }, []));
 
   const quickActions = [
     { icon: '🤙', label: 'Fake Call',   sub: 'Safety trick',       bg: '#FFE4EF',   color: C.rose,   screen: 'FakeCall' },
@@ -49,7 +67,7 @@ export default function PassengerHome({ navigation }) {
           <View style={{ flexDirection: 'row', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
             <Badge text="🛡️ Safe Zone ON" color="#fff" bg="rgba(255,255,255,0.2)" />
             <Badge text="✅ Verified Female" color="#fff" bg="rgba(255,255,255,0.2)" />
-            <Badge text={`⭐ ${(user?.averageRating || 4.9).toFixed(1)}`} color="#fff" bg="rgba(255,255,255,0.2)" />
+            {!!user?.totalRatings && <Badge text={`⭐ ${user.averageRating.toFixed(1)}`} color="#fff" bg="rgba(255,255,255,0.2)" />}
           </View>
         </LinearGradient>
 
@@ -75,22 +93,43 @@ export default function PassengerHome({ navigation }) {
           </View>
         </View>
 
-        {/* Map Placeholder */}
+        {/* Live location map */}
         <View style={styles.mapCard}>
-          <View style={styles.mapPlaceholder}>
-            <Text style={{ fontSize: 40 }}>🗺️</Text>
-            <Text style={{ color: C.muted, fontSize: 13, marginTop: 8 }}>Live Map — Lahore</Text>
-            <Text style={{ color: C.muted, fontSize: 11, marginTop: 4 }}>
-              GPS tracking active during rides
+          {myLoc ? (
+            <OSMMap
+              style={styles.liveMap}
+              center={myLoc}
+              zoom={15}
+              fitKey="home"
+              markers={[{ id: 'me', latitude: myLoc.latitude, longitude: myLoc.longitude, color: '#2D7FF9', accuracy: myLoc.accuracy, label: 'You are here' }]}
+            />
+          ) : (
+            <View style={styles.mapPlaceholder}>
+              {locError ? (
+                <>
+                  <Text style={{ fontSize: 30 }}>📍</Text>
+                  <Text style={styles.mapMsg}>{locError.message}</Text>
+                  <TouchableOpacity onPress={locError.code === LocationError.PERMISSION_BLOCKED ? openLocationSettings : startWatching} style={styles.mapRetry}>
+                    <Text style={styles.mapRetryText}>{locError.code === LocationError.PERMISSION_BLOCKED ? 'Open Settings' : 'Try again'}</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <ActivityIndicator color={C.rose} />
+                  <Text style={styles.mapMsg}>Finding your location…</Text>
+                </>
+              )}
+            </View>
+          )}
+          <View style={styles.mapFooter}>
+            <Text style={styles.mapFooterText} numberOfLines={1}>
+              {myLoc
+                ? `📍 Live location${myLoc.accuracy > LOW_ACCURACY_METERS ? ` (approximate, ±${myLoc.accuracy} m)` : ''}`
+                : locError ? '📍 Location off' : '📍 Finding location…'}
             </Text>
-          </View>
-          <View style={{ flexDirection: 'row', gap: 8, padding: 10 }}>
-            {safePoints.map(p => (
-              <TouchableOpacity key={p.label} onPress={() => navigation.navigate('SafePoints')}
-                style={[styles.safeChip, { backgroundColor: p.bg }]}>
-                <Text style={{ fontSize: 11, color: p.color, fontWeight: '600' }}>{p.icon} {p.label}</Text>
-              </TouchableOpacity>
-            ))}
+            <TouchableOpacity onPress={() => navigation.navigate('SafePoints')}>
+              <Text style={styles.mapFooterLink}>Safe Points →</Text>
+            </TouchableOpacity>
           </View>
         </View>
 
@@ -161,7 +200,13 @@ const styles = StyleSheet.create({
   quickDestLabel:   { fontSize: 10, color: C.muted, fontWeight: '600' },
   mapCard:          { backgroundColor: C.white, borderRadius: 20, margin: 14, marginTop: 0, overflow: 'hidden', shadowColor: C.rose, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 3 },
   mapPlaceholder:   { height: 180, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FBF0F7' },
-  safeChip:         { flex: 1, padding: 8, borderRadius: 10, alignItems: 'center' },
+  liveMap:          { height: 200 },
+  mapMsg:           { color: C.muted, fontSize: 12, marginTop: 8, textAlign: 'center', paddingHorizontal: 20 },
+  mapRetry:         { marginTop: 10, borderWidth: 1.5, borderColor: C.rose, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 6 },
+  mapRetryText:     { color: C.rose, fontWeight: '700', fontSize: 12 },
+  mapFooter:        { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10 },
+  mapFooterText:    { fontSize: 12, color: C.text, fontWeight: '600', flex: 1 },
+  mapFooterLink:    { fontSize: 12, color: C.rose, fontWeight: '700', marginLeft: 10 },
   gridWrap:         { flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingHorizontal: 14 },
   actionCard:       { width: '47%', padding: 14, borderRadius: 18, gap: 4 },
   actionLabel:      { fontSize: 12, fontWeight: '700' },

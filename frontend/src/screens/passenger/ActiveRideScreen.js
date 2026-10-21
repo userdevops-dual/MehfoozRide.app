@@ -197,8 +197,15 @@ export default function ActiveRideScreen({ navigation, route }) {
 
   // Map shows you and the driver; zooms to fit both once the driver's location arrives
   const mapCenter  = myLocation || { latitude: 31.5204, longitude: 74.3587 };
+  const [dropLng, dropLat] = ride?.dropoffLocation?.coordinates || [];
+  // Route the passenger chose when booking ([lng, lat] on the server → [lat, lng] for the map)
+  const plannedRoute = (ride?.preferredRoute?.coordinates || []).map(([lng, lat]) => [lat, lng]);
+  const mapRoutes = plannedRoute.length > 1
+    ? [{ id: 'planned', coordinates: plannedRoute, color: C.rose, weight: 5, opacity: 0.8, dashed: ride?.preferredRoute?.source === 'straight_line' }]
+    : [];
   const mapMarkers = [
-    ...(myLocation ? [{ id: 'me', ...myLocation, label: 'You', color: C.rose }] : []),
+    ...(myLocation ? [{ id: 'me', ...myLocation, label: 'You', color: '#2D7FF9' }] : []),
+    ...(dropLat != null ? [{ id: 'dropoff', latitude: dropLat, longitude: dropLng, label: 'Destination', emoji: '🏁' }] : []),
     ...(driverLoc  ? [{ id: 'driver', ...driverLoc, label: driver?.name || 'Your Driver', emoji: '🚗' }] : []),
   ];
 
@@ -217,7 +224,9 @@ export default function ActiveRideScreen({ navigation, route }) {
         center={mapCenter}
         zoom={15}
         markers={mapMarkers}
-        fitToContent={mapMarkers.length > 1}
+        routes={mapRoutes}
+        fitToContent={mapMarkers.length > 1 || mapRoutes.length > 0}
+        fitKey={`${mapRoutes.length}|${!!driverLoc}`}
       />
 
       {/* ── FIXED OTP MODAL ─────────────────────────────────────────────────

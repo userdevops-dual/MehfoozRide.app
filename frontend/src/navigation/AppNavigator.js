@@ -10,6 +10,7 @@ import { C } from '../utils/theme';
 import SplashScreen                from '../screens/auth/SplashScreen';
 import LoginScreen                 from '../screens/auth/LoginScreen';
 import SignupScreen                from '../screens/auth/SignupScreen';
+import RoleSelectScreen            from '../screens/auth/RoleSelectScreen';
 
 // Passenger
 import PassengerHome               from '../screens/passenger/PassengerHome';
@@ -42,7 +43,7 @@ import AdminDriverApprovalScreen   from '../screens/shared/AdminDriverApprovalSc
 const Stack = createNativeStackNavigator();
 
 export default function AppNavigator() {
-  const { user, loading } = useAuth();
+  const { user, mode, loading } = useAuth();
 
   if (loading) {
     return (
@@ -52,19 +53,19 @@ export default function AppNavigator() {
     );
   }
 
-  // Determine initial route based on role
+  // Determine initial route from the session and the chosen mode
   const getInitial = () => {
     if (!user) return 'Splash';
-    if (user.role === 'admin')  return 'AdminPanel';
-    if (user.role === 'driver') return 'DriverHome';
-    return 'PassengerHome';
+    if (user.role === 'admin') return 'AdminPanel';
+    if (!mode)                 return 'RoleSelect';
+    return mode === 'driver' ? 'DriverHome' : 'PassengerHome';
   };
 
   // Keying the container (which holds the navigation state) on the session
-  // resets navigation on login / logout, so each role lands on its home
-  // screen and logout returns to Splash. Keying only the Stack.Navigator
-  // is not enough — the container would restore the previous route.
-  const sessionKey = user ? `${user._id}:${user.role}` : 'guest';
+  // and mode resets navigation on login / logout / mode switch, so the user
+  // lands on the right home screen. Keying only the Stack.Navigator is not
+  // enough — the container would restore the previous route.
+  const sessionKey = user ? `${user._id}:${user.role}:${mode || 'choose'}` : 'guest';
 
   return (
     <NavigationContainer key={sessionKey}>
@@ -80,6 +81,7 @@ export default function AppNavigator() {
         <Stack.Screen name="Splash"         component={SplashScreen} />
         <Stack.Screen name="Login"          component={LoginScreen} />
         <Stack.Screen name="Signup"         component={SignupScreen} />
+        <Stack.Screen name="RoleSelect"     component={RoleSelectScreen} />
 
         {/* Passenger */}
         <Stack.Screen name="PassengerHome"  component={PassengerHome} />

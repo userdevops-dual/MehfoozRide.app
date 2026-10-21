@@ -6,10 +6,12 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {rideAPI} from '../../services/api';
+import {useAuth} from '../../context/AuthContext';
 import {C} from '../../utils/theme';
 
 
 export default function RideHistoryScreen({navigation}) {
+  const {mode} = useAuth();
   const [rides, setRides]       = useState([]);
   const [loading, setLoading]   = useState(true);
   const [selected, setSelected] = useState(null);
@@ -17,7 +19,7 @@ export default function RideHistoryScreen({navigation}) {
 
   const loadRides = async () => {
     try {
-      const res = await rideAPI.getMyRides();
+      const res = await rideAPI.getMyRides(mode === 'passenger' ? 'passenger' : undefined);
       setRides(res.rides || []);
     } catch (err) {
       Alert.alert('Could Not Load Rides', err.response?.data?.message || 'Server error. Pull down to retry.');

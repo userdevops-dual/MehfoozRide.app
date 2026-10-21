@@ -53,7 +53,13 @@ The server refuses to start if `MONGO_URI` or `JWT_SECRET` is missing. **Never c
 | `DEMO_OTP` | `123456` | Code accepted when `SMS_PROVIDER=demo` |
 | `STORAGE_DRIVER` | `local` | CNIC photos saved privately in `backend/uploads/private` (git-ignored, not publicly served) |
 
-Run the registration API tests (backend must be running): `node tests/phase1.api.test.js`
+| `GEOCODER_URL` | Nominatim public server | Place search / addresses (OpenStreetMap) |
+| `ROUTING_URL` | OSRM public demo server | Road routes, distance and time |
+| `GEO_CONTACT_EMAIL` | — | Your e-mail, sent to Nominatim as its usage policy asks |
+
+Maps need **no API key**. The public OpenStreetMap servers allow light use only (search is limited to 1 request per second and cached by the backend); use your own servers for production.
+
+Run the API tests (backend must be running): `node tests/phase1.api.test.js` (registration) and `node tests/phase2.api.test.js` (maps, routes, booking — needs internet).
 
 ---
 
@@ -126,7 +132,7 @@ Admin panel: driver approvals, background checks, SOS incidents, fake rides, liv
 - **Selfie / face match** — selfie is captured but not compared automatically.
 - **Phone OTP** — real server-side verification (expiry, attempt limit, single-use token), but with `SMS_PROVIDER=demo` no SMS is sent: the app shows the demo code and labels it as demo.
 - **Guardian SMS** — messages are printed in the backend console, not actually sent.
-- **Pickup / dropoff coordinates** — fixed DHA → Gulberg demo route on the booking screen.
+- **Route times** — from OSRM (free-flow road speeds); real Lahore traffic is usually slower, so the final fare uses the actual trip time.
 
 ---
 

@@ -55,7 +55,9 @@ export const authAPI = {
 
 // ── Ride API ──────────────────────────────────────────────────────────────
 export const rideAPI = {
-  book:      (data)       => api.post('/rides',               data).then(r => r.data),
+  // { pickupCoordinates, dropoffCoordinates ([lng, lat]), rideType, isPooled } → real routes + fares
+  estimate:  (data)       => api.post('/rides/estimate', data, { timeout: 30000 }).then(r => r.data),
+  book:      (data)       => api.post('/rides', data, { timeout: 30000 }).then(r => r.data),
   accept:    (rideId)     => api.put(`/rides/${rideId}/accept`).then(r => r.data),
   arrived:   (rideId)     => api.put(`/rides/${rideId}/arrived`).then(r => r.data),
   verifyOTP: (rideId, otp)=> api.post(`/rides/${rideId}/verify-otp`, { otp }).then(r => r.data),
@@ -64,7 +66,7 @@ export const rideAPI = {
   rate:      (rideId, data)   => api.post(`/rides/${rideId}/rate`, data).then(r => r.data),
   sos:       (rideId)     => api.post(`/rides/${rideId}/sos`).then(r => r.data),
   getById:   (rideId)     => api.get(`/rides/${rideId}`).then(r => r.data),
-  getMyRides:()           => api.get('/rides/my-rides').then(r => r.data),
+  getMyRides:(as)         => api.get('/rides/my-rides', { params: as ? { as } : {} }).then(r => r.data),
   // NEW: real-time fare update
   getLiveFare:(rideId, distanceKm) => api.get(`/rides/${rideId}/live-fare`, { params: { distanceKm } }).then(r => r.data),
 };
@@ -75,3 +77,13 @@ export const driverAPI = {
   setOnline: (isOnline)   => api.put('/driver/online', { isOnline }).then(r => r.data),
 };
 
+
+// ── Maps (served by our backend — OpenStreetMap Nominatim + OSRM by default) ──
+export const geoAPI = {
+  // near: { latitude, longitude } — results are biased towards it
+  search:  (q, near) => api.get('/geo/search', {
+    params: { q, ...(near ? { lat: near.latitude, lng: near.longitude } : {}) }, timeout: 20000,
+  }).then(r => r.data),
+  reverse: ({ latitude, longitude }) =>
+    api.get('/geo/reverse', { params: { lat: latitude, lng: longitude }, timeout: 20000 }).then(r => r.data),
+};

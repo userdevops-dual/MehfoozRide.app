@@ -25,6 +25,21 @@ module.exports = {
 
   password: { minLength: 8 },
 
+  // Maps — free OpenStreetMap services by default. Point these at your own
+  // Nominatim / OSRM servers (or another compatible provider) for production;
+  // the public servers are for light development use only.
+  geo: {
+    geocoderUrl: process.env.GEOCODER_URL || 'https://nominatim.openstreetmap.org',
+    routingUrl:  process.env.ROUTING_URL  || 'https://router.project-osrm.org',
+    // Nominatim's usage policy requires an identifying User-Agent with contact details
+    userAgent: `MehfoozRide/1.0 (Final Year Project${process.env.GEO_CONTACT_EMAIL ? `; ${process.env.GEO_CONTACT_EMAIL}` : ''})`,
+    countryCodes: 'pk',
+    // Lahore — search results near here are preferred (not required)
+    defaultCenter: { lat: 31.5204, lng: 74.3587 },
+    maxAlternatives: 3,
+    cacheMinutes: 30,
+  },
+
   uploads: {
     // STORAGE_DRIVER=local (default) — files kept privately under backend/uploads/private
     driver:            (process.env.STORAGE_DRIVER || 'local').toLowerCase(),

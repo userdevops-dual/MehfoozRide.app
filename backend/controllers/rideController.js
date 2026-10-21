@@ -7,6 +7,8 @@ const Ride   = require("../models/Ride");
 const User   = require("../models/User");
 const Rating = require("../models/Rating");
 const { haversine } = require("../utils/routeDeviation");
+const geo = require("../services/geo");
+const { fromLngLat, inServiceArea } = require("../utils/geoValidation");
 
 const ACTIVE_STATUSES = ["requested", "accepted", "arrived", "otp_verified", "in_progress"];
 
@@ -18,9 +20,6 @@ const sameId = (a, b) => !!a && !!b && a.toString() === b.toString();
 const isPassenger = (ride, user) => sameId(ride.passenger?._id || ride.passenger, user.id);
 const isDriver    = (ride, user) => sameId(ride.driver?._id    || ride.driver,    user.id);
 const isParticipant = (ride, user) => isPassenger(ride, user) || isDriver(ride, user);
-
-const isValidCoordinates = (c) =>
-  Array.isArray(c) && c.length === 2 && c.every(n => typeof n === "number" && Number.isFinite(n));
 
 // ── Dynamic Fare Calculator ───────────────
 // Fare = Base Fare + (Distance × Rate/km) + (Time × Rate/min) + ride type surcharge
@@ -53,24 +52,91 @@ const calculateFare = (distanceKm, durationMinutes = 0, isPooled = false, rideTy
   };
 };
 
+// ── Route planning (server-side — distance is never trusted from the client) ──
+// Real road routes from the routing service; if it is unreachable, a clearly
+// marked straight-line estimate is used so booking still works.
+const MIN_TRIP_KM = 0.3;
+
+const planRoutes = async (pickup, dropoff) => {
+  try {
+    const routes = await geo.routes(pickup, dropoff);
+    return { source: "osrm", routes };
+  } catch (e) {
+    const straightKm = haversine(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng);
+    const distanceKm = Math.max(1, Math.round(straightKm * ROAD_DISTANCE_FACTOR * 10) / 10);
+    return {
+      source: "straight_line",
+      warning: "Road routing is unavailable right now — distance and time are approximate.",
+      routes: [{
+        index: 0, distanceKm, summary: "Approximate (straight line)",
+        durationMin: Math.round(distanceKm * MINUTES_PER_KM_ESTIMATE),
+        coordinates: [[pickup.lat, pickup.lng], [dropoff.lat, dropoff.lng]],
+      }],
+    };
+  }
+};
+
+// Validates [lng, lat] pickup/dropoff from the request body
+const readTripPoints = (body) => {
+  const pickup  = fromLngLat(body.pickupCoordinates);
+  const dropoff = fromLngLat(body.dropoffCoordinates);
+  if (!pickup || !dropoff) return { error: "Pickup and destination locations are required." };
+  if (!inServiceArea(pickup) || !inServiceArea(dropoff)) return { error: "Mehfooz Ride currently operates in Pakistan only." };
+  if (haversine(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng) < MIN_TRIP_KM) {
+    return { error: "Pickup and destination are too close together." };
+  }
+  return { pickup, dropoff };
+};
+
+// ════════════════════════════════════════
+//  @route  POST /api/rides/estimate
+//  Real routes (with alternatives) + server-calculated fare for each
+// ════════════════════════════════════════
+exports.estimateRide = async (req, res) => {
+  try {
+    const { pickup, dropoff, error } = readTripPoints(req.body);
+    if (error) return res.status(400).json({ success: false, message: error });
+
+    const type   = RIDE_TYPE_SURCHARGE[req.body.rideType] !== undefined ? req.body.rideType : "economy";
+    const pooled = req.body.isPooled === true;
+    const plan   = await planRoutes(pickup, dropoff);
+
+    res.json({
+      success: true,
+      source:  plan.source,
+      warning: plan.warning,
+      routes:  plan.routes.map(r => ({ ...r, fare: calculateFare(r.distanceKm, r.durationMin, pooled, type) })),
+    });
+  } catch (error) {
+    console.error("Estimate error:", error.message);
+    res.status(500).json({ success: false, message: "Could not estimate this ride." });
+  }
+};
+
 // ════════════════════════════════════════
 //  @route  POST /api/rides
 // ════════════════════════════════════════
 exports.bookRide = async (req, res) => {
   try {
-    if (req.user.role !== "passenger") {
+    // Drivers may also ride as passengers, but not while online for ride requests
+    if (!["passenger", "driver"].includes(req.user.role)) {
       return res.status(403).json({ success: false, message: "Only passengers can book rides" });
+    }
+    if (req.user.role === "driver" && req.user.isOnline) {
+      return res.status(400).json({ success: false, message: "Go offline in driver mode before booking a ride as a passenger." });
     }
 
     const {
       pickupAddress, pickupCoordinates,
       dropoffAddress, dropoffCoordinates,
-      moodPreference, isPooled, rideType,
+      moodPreference, isPooled, rideType, routeIndex,
     } = req.body;
 
-    if (!pickupAddress || !dropoffAddress || !isValidCoordinates(pickupCoordinates) || !isValidCoordinates(dropoffCoordinates)) {
+    if (!pickupAddress || !dropoffAddress) {
       return res.status(400).json({ success: false, message: "Pickup and dropoff locations are required" });
     }
+    const { pickup, dropoff, error } = readTripPoints(req.body);
+    if (error) return res.status(400).json({ success: false, message: error });
 
     const activeRide = await Ride.findOne({
       passenger: req.user.id,
@@ -80,14 +146,15 @@ exports.bookRide = async (req, res) => {
       return res.status(400).json({ success: false, message: "You already have an active ride", rideId: activeRide._id });
     }
 
-    // Distance is computed on the server — never trusted from the client.
-    // Coordinates are [lng, lat].
-    const straightKm = haversine(pickupCoordinates[1], pickupCoordinates[0], dropoffCoordinates[1], dropoffCoordinates[0]);
-    const distanceKm = Math.max(1, Math.round(straightKm * ROAD_DISTANCE_FACTOR * 10) / 10);
+    // Route chosen by the passenger — recalculated here, never taken from the client
+    const plan  = await planRoutes(pickup, dropoff);
+    const route = plan.routes[Number.isInteger(routeIndex) ? routeIndex : 0] || plan.routes[0];
+
+    const distanceKm = route.distanceKm;
     const type       = RIDE_TYPE_SURCHARGE[rideType] !== undefined ? rideType : "economy";
     const pooled     = isPooled === true;
 
-    const fareDetails = calculateFare(distanceKm, Math.round(distanceKm * MINUTES_PER_KM_ESTIMATE), pooled, type);
+    const fareDetails = calculateFare(distanceKm, route.durationMin, pooled, type);
     const otp = generateOTP();
 
     const ride = await Ride.create({
@@ -95,6 +162,15 @@ exports.bookRide = async (req, res) => {
       pickupLocation:  { address: pickupAddress,  coordinates: pickupCoordinates },
       dropoffLocation: { address: dropoffAddress, coordinates: dropoffCoordinates },
       distanceKm,
+      estimatedDurationMinutes: route.durationMin,
+      preferredRoute: {
+        source:      plan.source,
+        index:       route.index,
+        distanceKm:  route.distanceKm,
+        durationMin: route.durationMin,
+        summary:     route.summary,
+        coordinates: route.coordinates.map(([lat, lng]) => [lng, lat]),
+      },
       estimatedFare:   fareDetails.total,
       fareBreakdown:   fareDetails,
       farePerPassenger: fareDetails.farePerPassenger,
@@ -119,6 +195,8 @@ exports.bookRide = async (req, res) => {
         fareBreakdown:   ride.fareBreakdown,
         farePerPassenger: ride.farePerPassenger,
         distanceKm:      ride.distanceKm,
+        estimatedDurationMinutes: ride.estimatedDurationMinutes,
+        preferredRoute:  ride.preferredRoute,
         pickupLocation:  ride.pickupLocation,
         dropoffLocation: ride.dropoffLocation,
         status:          ride.status,
@@ -443,7 +521,9 @@ exports.submitRating = async (req, res) => {
 // ════════════════════════════════════════
 exports.getMyRides = async (req, res) => {
   try {
-    const query = req.user.role === "driver" ? { driver: req.user.id } : { passenger: req.user.id };
+    // ?as=passenger lets a driver see the rides she took as a passenger
+    const asDriver = req.user.role === "driver" && req.query.as !== "passenger";
+    const query = asDriver ? { driver: req.user.id } : { passenger: req.user.id };
     const rides = await Ride.find(query)
       .populate("driver",    "name averageRating driverDetails")
       .populate("passenger", "name phone")

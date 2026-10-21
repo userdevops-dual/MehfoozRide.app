@@ -1,7 +1,7 @@
 const express = require('express');
 const router  = express.Router();
 const {
-  bookRide, acceptRide, driverArrived, verifyOTP,
+  bookRide, estimateRide, acceptRide, driverArrived, verifyOTP,
   completeRide, cancelRide, submitRating,
   getMyRides, getRideById, activateSOS, getLiveFare,
 } = require('../controllers/rideController');
@@ -9,6 +9,7 @@ const { protect } = require('../middleware/auth');
 
 router.use(protect);
 
+router.post('/estimate',          estimateRide);  // routes + fare before booking
 router.post('/',                  bookRide);
 router.get('/my-rides',           getMyRides);
 router.get('/:id',                getRideById);

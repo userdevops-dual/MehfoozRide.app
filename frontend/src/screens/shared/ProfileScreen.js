@@ -11,7 +11,7 @@ import { C } from '../../utils/theme';
 import { passwordRules } from '../../utils/validation';
 
 export default function ProfileScreen({ navigation }) {
-  const { user, logout, updateUser } = useAuth();
+  const { user, logout, updateUser, mode, setMode } = useAuth();
 
   const [editing,     setEditing]     = useState(false);
   const [name,        setName]        = useState(user?.name        || '');
@@ -192,6 +192,20 @@ export default function ProfileScreen({ navigation }) {
             </>
           )}
         </View>
+
+        {/* ── App mode ── */}
+        {user?.role !== 'admin' && (
+          <View style={s.card}>
+            <Text style={s.cardTitle}>🔄 App Mode</Text>
+            <TouchableOpacity onPress={() => setMode(null)} style={s.linkRow}>
+              <Text style={{ fontSize: 20 }}>{mode === 'driver' ? '🚗' : '👩'}</Text>
+              <Text style={s.linkText}>
+                Using as {mode === 'driver' ? 'Driver' : 'Passenger'} — tap to switch
+              </Text>
+              <Text style={{ color: C.muted, fontSize: 20 }}>›</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* ── Quick Links ── */}
         <View style={s.card}>
