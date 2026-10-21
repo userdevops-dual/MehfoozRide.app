@@ -8,6 +8,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
 import { authAPI } from '../../services/api';
 import { C } from '../../utils/theme';
+import { passwordRules } from '../../utils/validation';
 
 export default function ProfileScreen({ navigation }) {
   const { user, logout, updateUser } = useAuth();
@@ -49,8 +50,9 @@ export default function ProfileScreen({ navigation }) {
     if (newPass !== confPass) {
       Alert.alert('Mismatch', 'New passwords do not match.'); return;
     }
-    if (newPass.length < 6) {
-      Alert.alert('Too Short', 'Password must be at least 6 characters.'); return;
+    const missing = passwordRules(newPass).filter(r => !r.ok);
+    if (missing.length) {
+      Alert.alert('Weak Password', 'Your new password needs: ' + missing.map(r => r.label.toLowerCase()).join(', ') + '.'); return;
     }
     setLoading(true);
     try {

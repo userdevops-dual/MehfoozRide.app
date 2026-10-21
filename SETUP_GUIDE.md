@@ -46,6 +46,15 @@ Generate a JWT secret: `node -e "console.log(require('crypto').randomBytes(64).t
 
 The server refuses to start if `MONGO_URI` or `JWT_SECRET` is missing. **Never commit `backend/.env`** (it is git-ignored).
 
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `DEMO_MODE` | `true` | Simulated services (SMS, dispatch, payments) are allowed and labelled as demo. `false` = refuse instead of simulating |
+| `SMS_PROVIDER` | `demo` | `demo` = no SMS sent, app shows the demo code · `twilio` = real SMS (`npm install twilio` + `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE`) |
+| `DEMO_OTP` | `123456` | Code accepted when `SMS_PROVIDER=demo` |
+| `STORAGE_DRIVER` | `local` | CNIC photos saved privately in `backend/uploads/private` (git-ignored, not publicly served) |
+
+Run the registration API tests (backend must be running): `node tests/phase1.api.test.js`
+
 ---
 
 ## 3. Mobile app (Android)
@@ -65,7 +74,22 @@ After the first build, for JavaScript-only changes: `npx expo start`, then press
 
 ---
 
-## 4. Demo accounts
+## 4. Registering a new account
+
+Welcome screen → **Create Account**:
+
+1. **Account** — name, email, mobile (`03001234567`) → **Send OTP** → enter the code → **Verify**
+   (demo mode shows the code on screen; wrong code is refused, 5 attempts, 30 s resend wait).
+2. **CNIC** — type the 13 digits (dashes are added). Last digit **even** → accepted; **odd** →
+   *"This CNIC is not eligible for registration in Mehfooz Ride because this application is currently restricted to female users."*
+   Then add the **front** and **back** photos (camera or gallery; preview, replace, remove).
+3. **Selfie**.
+4. **Password** (8+ characters, a letter and a number) + confirm, and choose Passenger or Driver.
+5. **Driver details** (drivers only) — license, vehicle, plate. Drivers wait for admin approval.
+
+Test CNICs: `35202-1234567-2` (eligible) · `35202-1234567-1` (rejected, odd) · `05202-1234567-2` (invalid region).
+
+## 5. Demo accounts
 
 | Role | Email | Password |
 |------|-------|----------|
@@ -77,7 +101,7 @@ The login screen has quick-fill buttons for one passenger, one driver and the ad
 
 ---
 
-## 5. Demo flow (needs two devices — e.g. two emulators, or emulator + phone)
+## 6. Demo flow (needs two devices — e.g. two emulators, or emulator + phone)
 
 | Step | Device | Screen |
 |------|--------|--------|
@@ -96,17 +120,17 @@ Admin panel: driver approvals, background checks, SOS incidents, fake rides, liv
 
 ---
 
-## 6. What is simulated (say so in the presentation)
+## 7. What is simulated (say so in the presentation)
 
-- **CNIC gender check** — last digit even = female (NADRA rule); not checked against NADRA.
-- **Selfie / face match** — selfie is captured but not compared.
-- **Phone OTP** — any 6 digits are accepted (`123456` in demo); no SMS is sent.
+- **CNIC gender check** — real validation (13 digits, region digit 1–7, even last digit = female), enforced by the server; the CNIC is not checked against NADRA records.
+- **Selfie / face match** — selfie is captured but not compared automatically.
+- **Phone OTP** — real server-side verification (expiry, attempt limit, single-use token), but with `SMS_PROVIDER=demo` no SMS is sent: the app shows the demo code and labels it as demo.
 - **Guardian SMS** — messages are printed in the backend console, not actually sent.
 - **Pickup / dropoff coordinates** — fixed DHA → Gulberg demo route on the booking screen.
 
 ---
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Problem | Fix |
 |---------|-----|

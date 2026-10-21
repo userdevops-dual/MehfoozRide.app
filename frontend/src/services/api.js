@@ -22,8 +22,28 @@ api.interceptors.request.use((config) => {
 export default api;
 
 // ── Auth API ──────────────────────────────────────────────────────────────
+// Image picked with expo-image-picker → multipart file part
+const toFilePart = (img, name) => ({
+  uri:  img.uri,
+  name: img.fileName || `${name}.${(img.mimeType || 'image/jpeg').split('/')[1]}`,
+  type: img.mimeType || 'image/jpeg',
+});
+
 export const authAPI = {
-  signup:        (data)   => api.post('/auth/signup', data).then(r => r.data),
+  // fields: name, email, phone, password, role, cnic, phoneVerificationToken, driver fields
+  // images: { front, back } — CNIC photos from expo-image-picker
+  signup: (fields, images) => {
+    const fd = new FormData();
+    Object.entries(fields).forEach(([k, v]) => { if (v !== undefined && v !== null) fd.append(k, String(v)); });
+    fd.append('cnicFront', toFilePart(images.front, 'cnic-front'));
+    fd.append('cnicBack',  toFilePart(images.back,  'cnic-back'));
+    return api.post('/auth/signup', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 60000,
+    }).then(r => r.data);
+  },
+  sendOTP:       (phone)      => api.post('/auth/send-otp', { phone }).then(r => r.data),
+  verifyOTP:     (phone, otp) => api.post('/auth/verify-phone-otp', { phone, otp }).then(r => r.data),
   login:         (data)   => api.post('/auth/login',  data).then(r => r.data),
   getMe:         ()       => api.get('/auth/me').then(r => r.data),
   updateProfile: (data)   => api.put('/auth/update-profile', data).then(r => r.data),
@@ -55,9 +75,3 @@ export const driverAPI = {
   setOnline: (isOnline)   => api.put('/driver/online', { isOnline }).then(r => r.data),
 };
 
-// ── Phone OTP (added for signup verification) ─────────────────────────────
-// (appended to existing authAPI object — merge manually if needed)
-export const phoneOTPAPI = {
-  sendOTP:   (phone) => api.post('/auth/send-otp',         { phone }).then(r => r.data),
-  verifyOTP: (phone, otp) => api.post('/auth/verify-phone-otp', { phone, otp }).then(r => r.data),
-};

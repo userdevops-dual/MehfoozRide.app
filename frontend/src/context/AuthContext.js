@@ -47,8 +47,8 @@ export const AuthProvider = ({ children }) => {
     return res;
   };
 
-  const signup = async (formData) => {
-    const res = await authAPI.signup(formData);
+  const signup = async (fields, images) => {
+    const res = await authAPI.signup(fields, images);
     if (res.success) {
       await AsyncStorage.setItem('mehfooz_token', res.token);
       startSession(res.token, res.user);

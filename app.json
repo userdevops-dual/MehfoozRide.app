@@ -5,6 +5,15 @@
     "version": "1.0.0",
     "android": {
       "package": "com.testapp2"
-    }
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Mehfooz Ride needs access to your photos so you can upload your CNIC.",
+          "cameraPermission": "Mehfooz Ride needs the camera so you can photograph your CNIC and take a verification selfie."
+        }
+      ]
+    ]
   }
 }

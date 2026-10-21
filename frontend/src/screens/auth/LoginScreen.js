@@ -18,7 +18,7 @@ export default function LoginScreen({ navigation }) {
 
   const handleLogin = async () => {
     if (!identifier.trim() || !password) {
-      Alert.alert('Missing Fields', 'Please enter your email and password.'); return;
+      Alert.alert('Missing Fields', 'Please enter your email or mobile number, and your password.'); return;
     }
     setLoading(true);
     try {
@@ -53,9 +53,9 @@ export default function LoginScreen({ navigation }) {
           <Text style={styles.subheading}>Sign in to your account</Text>
 
           <Input
-            label="Email Address"
+            label="Email or Mobile Number"
             icon="📧"
-            placeholder="ayesha@example.com"
+            placeholder="ayesha@example.com or 03001234567"
             value={identifier}
             onChangeText={setIdentifier}
             keyboardType="email-address"
