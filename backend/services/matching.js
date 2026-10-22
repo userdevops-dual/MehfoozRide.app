@@ -139,8 +139,12 @@ const refreshOffer = async (leadId) => {
 };
 
 // Tell drivers who saw the request that it is gone (accepted elsewhere / cancelled / expired)
-const withdrawOffer = (ride, reason) => {
-  for (const id of ride.offeredTo || []) realtime.toUser(id, "ride:request-withdrawn", { rideId: ride._id, reason });
+// exceptId: the driver who accepted — she must not be told the ride was taken
+const withdrawOffer = (ride, reason, exceptId = null) => {
+  for (const id of ride.offeredTo || []) {
+    if (exceptId && String(id) === String(exceptId)) continue;
+    realtime.toUser(id, "ride:request-withdrawn", { rideId: ride._id, reason });
+  }
 };
 
 // ── Pool shares ──────────────────────────────────────────────────────────────

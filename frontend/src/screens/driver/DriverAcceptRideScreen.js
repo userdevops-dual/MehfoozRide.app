@@ -1,94 +1,172 @@
 // src/screens/driver/DriverAcceptRideScreen.js
-// Driver ride: Review → Accept → Arrive → OTP (with fake-ride detection) → In Progress → Complete
-// NEW: Same-gender passenger verification dialog
+// Driver ride flow:  Request (countdown) → Accept / Decline
+//   → for each passenger (one, or up to 3 when pooled):
+//      Navigate to pickup → Arrived → same-gender check → OTP → In progress → Complete
+// The server offers/withdraws requests and tells passengers; this screen only
+// shows what the server confirmed.
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  Alert, TextInput, ActivityIndicator, Modal,
+  Alert, TextInput, ActivityIndicator, Modal, Linking,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import { rideAPI } from '../../services/api';
 import {
-  emitRideAccepted, emitDriverArrived, emitOTPVerified, emitRideCompleted, emitOTPFailed,
-  emitDriverLocation,
+  emitDriverArrived, emitOTPVerified, emitRideCompleted, emitOTPFailed, emitDriverLocation,
+  onIncomingRide, onRequestWithdrawn, onRideCancelled,
 } from '../../services/socket';
+import OSMMap from '../../components/OSMMap';
 import { C, GRAD } from '../../utils/theme';
 
-const STEPS = ['accepted', 'arrived', 'otp_verified', 'in_progress', 'completed'];
-const STEP_LABELS = {
-  incoming:     { label: 'New Ride Request',    icon: '🔔',  color: C.gold    },
-  accepted:     { label: 'Navigate to Pickup',  icon: '🗺️',  color: C.info    },
-  arrived:      { label: 'Gender Verification', icon: '🔐',  color: C.plum    },
-  otp_verified: { label: 'Ride In Progress',    icon: '🚗',  color: C.success },
-  in_progress:  { label: 'Complete Ride',       icon: '🏁',  color: C.rose    },
-  completed:    { label: 'Ride Completed!',     icon: '✅',  color: C.success },
+const MOOD_LABEL = {
+  talkative: '💬 Talkative — happy to chat',
+  quiet:     '🤫 Quiet — little talk please',
+  introvert: '🎧 Introvert — minimal conversation',
+  friendly:  '😊 Friendly',
 };
 
+const STATUS_LABEL = {
+  accepted:    { text: 'Go to pickup',  color: C.info },
+  arrived:     { text: 'At pickup',     color: C.plum },
+  in_progress: { text: 'On board',      color: C.success },
+  completed:   { text: 'Dropped off',   color: C.success },
+  cancelled:   { text: 'Cancelled',     color: C.muted },
+};
+
+const ACTIVE = ['accepted', 'arrived', 'in_progress'];
 const errorMessage = (err) => err?.response?.data?.message || 'Server error. Check your connection and try again.';
+const latLng = (c) => (Array.isArray(c) ? { latitude: c[1], longitude: c[0] } : null);
+const fmt = s => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
 export default function DriverAcceptRideScreen({ navigation, route }) {
-  const rideRequest = route?.params?.rideData || route?.params?.rideRequest || {};
-  const rideId = rideRequest?.rideId;
+  const initialOffer = route?.params?.rideData || route?.params?.rideRequest || {};
+  const requestId = initialOffer?.rideId;
 
-  const [rideStatus,       setRideStatus]       = useState('incoming');
-  const [otp,              setOtp]              = useState('');
-  const [loading,          setLoading]          = useState(false);
-  const [rideTime,         setRideTime]         = useState(0);
-  const [otpFailures,      setOtpFailures]      = useState(0);
-  const [showGenderCheck,  setShowGenderCheck]  = useState(false);
-  const [finalFare,        setFinalFare]        = useState(null);
-  const timer = useRef(null);
+  const [phase,    setPhase]    = useState('incoming');   // incoming | active | done
+  const [offer,    setOffer]    = useState(initialOffer);
+  const [stops,    setStops]    = useState([]);           // one per passenger after accepting
+  const [current,  setCurrent]  = useState(null);         // rideId of the passenger being handled
+  const [otp,      setOtp]      = useState('');
+  const [loading,  setLoading]  = useState(false);
+  const [now,      setNow]      = useState(Date.now());
+  const [genderCheckFor, setGenderCheckFor] = useState(null);
+  const [myLoc,    setMyLoc]    = useState(null);
+  const closed = useRef(false);
+  const accepting = useRef(false);
 
+  const stop = stops.find(s => String(s.rideId) === String(current)) || null;
+  const updateStop = (rideId, patch) =>
+    setStops(list => list.map(s => (String(s.rideId) === String(rideId) ? { ...s, ...patch } : s)));
+
+  const leave = (title, message) => {
+    if (closed.current) return;
+    closed.current = true;
+    if (title) Alert.alert(title, message, [{ text: 'OK', onPress: () => navigation.replace('DriverHome') }]);
+    else navigation.replace('DriverHome');
+  };
+
+  useEffect(() => { if (!requestId) navigation.replace('DriverHome'); }, []);
+
+  // Clock for the request countdown and trip timers
   useEffect(() => {
-    if (!rideId) navigation.replace('DriverHome');
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
   }, []);
 
+  // While deciding: the request can change (pool grew/shrank) or be withdrawn
   useEffect(() => {
-    if (rideStatus === 'in_progress') {
-      timer.current = setInterval(() => setRideTime(t => t + 1), 1000);
-    }
-    return () => clearInterval(timer.current);
-  }, [rideStatus]);
+    if (phase !== 'incoming') return;
+    const offs = [
+      onIncomingRide(data => { if (String(data?.rideId) === String(requestId)) setOffer(data); }),
+      onRequestWithdrawn(data => {
+        if (String(data?.rideId) !== String(requestId)) return;
+        if (accepting.current) return;   // our own accept is in progress — the server decides
+        const why = data.reason === 'accepted_by_other_driver' ? 'Another driver accepted this ride.'
+                  : data.reason === 'expired' ? 'This request expired.' : 'The passenger cancelled this request.';
+        leave('Request No Longer Available', why);
+      }),
+    ];
+    return () => offs.forEach(off => off && off());
+  }, [phase]);
 
-  // ── Live location linked to this ride (passenger tracking + route deviation) ──
+  const secondsLeft = offer?.expiresAt ? Math.max(0, Math.round((new Date(offer.expiresAt).getTime() - now) / 1000)) : null;
   useEffect(() => {
-    if (!['accepted', 'arrived', 'in_progress'].includes(rideStatus)) return;
-    const sendLocation = () => Geolocation.getCurrentPosition(
-      pos => emitDriverLocation([pos.coords.longitude, pos.coords.latitude], rideId),
+    if (phase === 'incoming' && secondsLeft === 0) leave('Request Expired', 'This ride request is no longer available.');
+  }, [secondsLeft, phase]);
+
+  // During the trip: a passenger may cancel before pickup
+  useEffect(() => {
+    if (phase !== 'active') return;
+    const off = onRideCancelled(data => {
+      const s = stops.find(x => String(x.rideId) === String(data?.rideId));
+      if (!s) return;
+      updateStop(data.rideId, { status: 'cancelled' });
+      Alert.alert('Passenger Cancelled', `${s.passengerName} cancelled her ride.`);
+    });
+    return () => off && off();
+  }, [phase, stops]);
+
+  // Live location for every active passenger's ride (several when pooled)
+  const activeIds = useMemo(() => stops.filter(s => ACTIVE.includes(s.status)).map(s => s.rideId), [stops]);
+  useEffect(() => {
+    const send = () => Geolocation.getCurrentPosition(
+      pos => {
+        const c = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
+        setMyLoc(c);
+        emitDriverLocation([c.longitude, c.latitude], activeIds);
+      },
       () => {},
-      { enableHighAccuracy: true, timeout: 5000 }
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }
     );
-    sendLocation();
-    const interval = setInterval(sendLocation, 5000);
+    send();
+    const interval = setInterval(send, 5000);
     return () => clearInterval(interval);
-  }, [rideStatus]);
+  }, [activeIds.join(',')]);
 
-  const fmt = s => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
+  // All passengers finished → summary
+  useEffect(() => {
+    if (phase === 'active' && stops.length && stops.every(s => !ACTIVE.includes(s.status))) setPhase('done');
+  }, [stops, phase]);
 
+  // Next passenger to handle: someone on board first, then pickups in order
+  useEffect(() => {
+    if (phase !== 'active') return;
+    if (stop && ACTIVE.includes(stop.status)) return;
+    const next = stops.find(s => s.status === 'in_progress') || stops.find(s => ACTIVE.includes(s.status));
+    if (next) { setCurrent(next.rideId); setOtp(''); }
+  }, [stops, phase]);
+
+  // ── Actions ──────────────────────────────────────────────────────────────
   const handleAccept = async () => {
     setLoading(true);
+    accepting.current = true;
     try {
-      await rideAPI.accept(rideId);
-      emitRideAccepted(rideId);
-      setRideStatus('accepted');
+      const res = await rideAPI.accept(requestId);
+      const list = (res.stops || [res.ride]).map(s => ({ ...s, status: s.status || 'accepted', otpFailures: 0 }));
+      setStops(list);
+      setCurrent(list[0]?.rideId);
+      setPhase('active');
     } catch (err) {
-      Alert.alert('Could Not Accept', errorMessage(err), [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      leave('Could Not Accept', errorMessage(err));
     }
+    accepting.current = false;
     setLoading(false);
+  };
+
+  const handleDecline = async () => {
+    try { await rideAPI.decline(requestId); } catch { /* already gone — nothing to undo */ }
+    leave();
   };
 
   const handleArrived = async () => {
     setLoading(true);
     try {
-      await rideAPI.arrived(rideId);
-      emitDriverArrived(rideId);
-      setRideStatus('arrived');
-      // ── Show same-gender verification dialog ──────────────────────────────
-      setTimeout(() => setShowGenderCheck(true), 500);
+      await rideAPI.arrived(stop.rideId);
+      emitDriverArrived(stop.rideId);
+      updateStop(stop.rideId, { status: 'arrived' });
+      setTimeout(() => setGenderCheckFor(stop.rideId), 400);
     } catch (err) {
       Alert.alert('Error', errorMessage(err));
     }
@@ -96,76 +174,74 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
   };
 
   const handleGenderConfirm = (confirmed) => {
-    setShowGenderCheck(false);
-    if (!confirmed) {
-      // Passenger gender mismatch — cancel ride for safety
-      Alert.alert(
-        '🚫 Gender Mismatch',
-        'You have confirmed the passenger does NOT appear to be female.\n\nThis ride will be cancelled for safety and reviewed by the safety team.',
-        [
-          {
-            text: 'Cancel Ride',
-            style: 'destructive',
-            onPress: async () => {
-              try {
-                await rideAPI.cancel(rideId, 'Gender identity mismatch — passenger did not appear to be female');
-                Alert.alert('Ride Cancelled', 'Safety team has been notified.', [
-                  { text: 'OK', onPress: () => navigation.replace('DriverHome') },
-                ]);
-              } catch (err) {
-                Alert.alert('Could Not Cancel', errorMessage(err));
-              }
-            },
-          },
-        ]
-      );
-    }
-    // Confirmed female — proceed to OTP entry
+    const rideId = genderCheckFor;
+    const s = stops.find(x => String(x.rideId) === String(rideId));
+    setGenderCheckFor(null);
+    if (confirmed || !s) return;      // confirmed female → proceed to OTP
+    Alert.alert(
+      '🚫 Gender Mismatch',
+      `You have confirmed that ${s.passengerName} does NOT appear to be female.\n\nHer ride will be cancelled for safety and reviewed by the safety team.`,
+      [{
+        text: 'Cancel Her Ride', style: 'destructive',
+        onPress: async () => {
+          try {
+            await rideAPI.cancel(rideId, 'Gender identity mismatch — passenger did not appear to be female');
+            updateStop(rideId, { status: 'cancelled' });
+            Alert.alert('Ride Cancelled', 'The safety team has been notified.');
+          } catch (err) {
+            Alert.alert('Could Not Cancel', errorMessage(err));
+          }
+        },
+      }]
+    );
   };
 
   const handleVerifyOTP = async () => {
-    if (!otp || otp.length !== 4) {
-      Alert.alert('Invalid OTP', "Please enter the 4-digit code shown on passenger's screen.");
-      return;
+    if (!/^\d{4}$/.test(otp)) {
+      Alert.alert('Invalid OTP', "Enter the 4-digit code shown on the passenger's phone."); return;
     }
     setLoading(true);
     try {
-      await rideAPI.verifyOTP(rideId, otp);
-      emitOTPVerified(rideId);
-      setRideStatus('in_progress');
-      setOtpFailures(0);
+      await rideAPI.verifyOTP(stop.rideId, otp);
+      emitOTPVerified(stop.rideId);
+      updateStop(stop.rideId, { status: 'in_progress', startedAt: Date.now() });
+      setOtp('');
     } catch (err) {
       const data = err?.response?.data;
       if (!data) {
         // Network problem — the OTP was NOT verified, so the ride must not start
         Alert.alert('Connection Error', 'Could not reach the server. The ride has not started — please try again.');
       } else {
-        if (data.failureCount) setOtpFailures(data.failureCount);
-        emitOTPFailed(rideId);
-
+        updateStop(stop.rideId, { otpFailures: data.failureCount || stop.otpFailures });
+        emitOTPFailed(stop.rideId);
         if (data.rideCancelled) {
-          Alert.alert('🚨 Ride Cancelled', data.message, [
-            { text: 'OK', onPress: () => navigation.replace('DriverHome') },
-          ]);
+          updateStop(stop.rideId, { status: 'cancelled' });
+          Alert.alert('🚨 Ride Cancelled', data.message);
         } else {
           Alert.alert('Wrong OTP', data.message || 'Ask the passenger for the correct code.');
         }
       }
+      setOtp('');
     }
     setLoading(false);
   };
 
-  const handleComplete = async () => {
-    Alert.alert('Complete Ride?', 'Confirm you have dropped off the passenger safely.', [
+  const handleComplete = () => {
+    Alert.alert('Complete Ride?', `Confirm you have dropped off ${stop.passengerName} safely.`, [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Complete Ride 🏁', onPress: async () => {
+        text: 'Complete 🏁', onPress: async () => {
           setLoading(true);
           try {
-            const res = await rideAPI.complete(rideId);
-            setFinalFare(res.ride?.actualFare ?? null);
-            emitRideCompleted(rideId);
-            setRideStatus('completed');
+            const res = await rideAPI.complete(stop.rideId);
+            updateStop(stop.rideId, {
+              status: 'completed',
+              finalFare: res.ride?.actualFare,
+              billedKm: res.ride?.distanceKm,
+              distanceSource: res.ride?.distanceSource,
+              minutes: res.ride?.durationMinutes,
+            });
+            emitRideCompleted(stop.rideId);
           } catch (err) {
             Alert.alert('Could Not Complete', errorMessage(err));
           }
@@ -175,35 +251,44 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
     ]);
   };
 
-  // ── Completed State ──────────────────────────────────────────────────────
-  if (rideStatus === 'completed') {
+  const callPassenger = (phone) => phone && Linking.openURL(`tel:${phone}`).catch(() => {});
+
+  // ── Map ──────────────────────────────────────────────────────────────────
+  const shown = phase === 'incoming' ? (offer?.stops || [offer]) : stops.filter(s => s.status !== 'cancelled');
+  const markers = [
+    ...(myLoc ? [{ id: 'me', ...myLoc, emoji: '🚗', label: 'You' }] : []),
+    ...shown.flatMap((s, i) => {
+      const p = latLng(s.pickupCoordinates), d = latLng(s.dropoffCoordinates);
+      const done = s.status === 'completed';
+      return [
+        ...(p && !['in_progress', 'completed'].includes(s.status) ? [{ id: `p${i}`, ...p, color: C.success, label: `Pickup ${i + 1}: ${s.passengerName}` }] : []),
+        ...(d && !done ? [{ id: `d${i}`, ...d, color: C.rose, label: `Drop-off ${i + 1}: ${s.passengerName}` }] : []),
+      ];
+    }),
+  ];
+  const mapFitKey = `${phase}|${shown.map(s => s.status).join(',')}`;
+
+  // ── Done ─────────────────────────────────────────────────────────────────
+  if (phase === 'done') {
+    const completed = stops.filter(s => s.status === 'completed');
+    const total = completed.reduce((n, s) => n + (s.finalFare || 0), 0);
     return (
       <LinearGradient colors={GRAD.success} style={styles.doneScreen}>
         <Text style={{ fontSize: 80, marginBottom: 16 }}>🌸</Text>
-        <Text style={styles.doneTitle}>Ride Completed!</Text>
-        <Text style={styles.doneSub}>Great job! You rode safely.</Text>
+        <Text style={styles.doneTitle}>{completed.length ? 'Trip Completed!' : 'Trip Ended'}</Text>
+        <Text style={styles.doneSub}>{completed.length ? 'Great job! You drove safely.' : 'No passengers were dropped off.'}</Text>
         <View style={styles.doneCard}>
-          <View style={styles.doneRow}>
-            <Text style={styles.doneLbl}>Duration</Text>
-            <Text style={styles.doneVal}>{fmt(rideTime)}</Text>
-          </View>
-          <View style={styles.doneRow}>
-            <Text style={styles.doneLbl}>Earned</Text>
-            <Text style={[styles.doneVal, { color: '#fff', fontSize: 22, fontWeight: '800' }]}>
-              Rs. {finalFare ?? rideRequest?.estimatedFare}
-            </Text>
-          </View>
-          {rideRequest?.isPooled && (
-            <View style={styles.doneRow}>
-              <Text style={styles.doneLbl}>Pool Fare (per pax)</Text>
-              <Text style={styles.doneVal}>Rs. {rideRequest?.farePerPassenger || 140}</Text>
+          {stops.map(s => (
+            <View key={s.rideId} style={styles.doneRow}>
+              <Text style={styles.doneLbl} numberOfLines={1}>{s.passengerName}{s.status === 'cancelled' ? ' (cancelled)' : ''}</Text>
+              <Text style={styles.doneVal}>
+                {s.status === 'completed' ? `Rs ${s.finalFare} · ${s.billedKm} km${s.distanceSource === 'gps' ? ' (GPS)' : ''}` : '—'}
+              </Text>
             </View>
-          )}
+          ))}
           <View style={styles.doneRow}>
-            <Text style={styles.doneLbl}>Route</Text>
-            <Text style={styles.doneVal} numberOfLines={1}>
-              {rideRequest?.pickupAddress || 'DHA Phase 5'} → {rideRequest?.dropoffAddress || 'Gulberg III'}
-            </Text>
+            <Text style={styles.doneLbl}>Total fare collected</Text>
+            <Text style={[styles.doneVal, { fontSize: 20, fontWeight: '800' }]}>Rs {total}</Text>
           </View>
         </View>
         <TouchableOpacity onPress={() => navigation.replace('DriverHome')} style={styles.homeBtn}>
@@ -213,36 +298,33 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
     );
   }
 
-  const step = STEP_LABELS[rideStatus];
+  const genderStop = stops.find(s => String(s.rideId) === String(genderCheckFor));
+  const onBoard = stop?.startedAt ? Math.max(0, Math.round((now - stop.startedAt) / 1000)) : 0;
 
   return (
     <View style={styles.screen}>
       {/* ── Same-Gender Verification Modal ─────────────────────────────────── */}
-      <Modal visible={showGenderCheck} transparent animationType="slide">
+      <Modal visible={!!genderCheckFor} transparent animationType="slide" onRequestClose={() => setGenderCheckFor(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.genderModal}>
             <Text style={{ fontSize: 40, marginBottom: 10 }}>🔍</Text>
             <Text style={styles.genderModalTitle}>Same-Gender Verification</Text>
             <Text style={styles.genderModalDesc}>
-              Before proceeding, you must confirm the passenger's identity as female.{'\n\n'}
-              Mehfooz Ride is a women-only platform. Verify visually that the passenger matches their registered profile.
+              Before proceeding, confirm the passenger is female.{'\n\n'}
+              Mehfooz Ride is a women-only platform. Check that the passenger matches her registered profile.
             </Text>
             <View style={styles.genderModalDetails}>
               <Text style={styles.genderDetailLabel}>Expected Passenger:</Text>
-              <Text style={styles.genderDetailValue}>{rideRequest?.passengerName || 'Passenger'}</Text>
+              <Text style={styles.genderDetailValue}>{genderStop?.passengerName || 'Passenger'}</Text>
               <Text style={styles.genderDetailLabel}>Platform Policy:</Text>
               <Text style={styles.genderDetailValue}>Female passengers only</Text>
             </View>
-            <Text style={styles.genderQuestion}>
-              Does the passenger appear to be female?
-            </Text>
+            <Text style={styles.genderQuestion}>Does the passenger appear to be female?</Text>
             <View style={{ flexDirection: 'row', gap: 12, marginTop: 12 }}>
-              <TouchableOpacity style={[styles.genderBtn, { backgroundColor: '#27AE60' }]}
-                onPress={() => handleGenderConfirm(true)}>
+              <TouchableOpacity style={[styles.genderBtn, { backgroundColor: '#27AE60' }]} onPress={() => handleGenderConfirm(true)}>
                 <Text style={styles.genderBtnText}>✅ Yes, Female</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={[styles.genderBtn, { backgroundColor: '#E74C3C' }]}
-                onPress={() => handleGenderConfirm(false)}>
+              <TouchableOpacity style={[styles.genderBtn, { backgroundColor: '#E74C3C' }]} onPress={() => handleGenderConfirm(false)}>
                 <Text style={styles.genderBtnText}>❌ Mismatch</Text>
               </TouchableOpacity>
             </View>
@@ -253,175 +335,161 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
       {/* Header */}
       <LinearGradient colors={GRAD.primary} style={styles.header}>
         <View style={styles.headerRow}>
-          <View>
-            <Text style={styles.headerSub}>Active Ride</Text>
-            <Text style={styles.headerTitle}>{step.icon} {step.label}</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.headerSub}>{phase === 'incoming' ? 'New ride request' : 'Active trip'}</Text>
+            <Text style={styles.headerTitle}>
+              {phase === 'incoming'
+                ? (offer?.isPooled ? `👯‍♀️ Pooled ride · ${offer.passengers} passengers` : '🔔 Ride request')
+                : stop ? `${STATUS_LABEL[stop.status]?.text || ''} · ${stop.passengerName}` : 'Trip'}
+            </Text>
           </View>
-          {rideStatus === 'in_progress' && (
-            <View style={styles.timerBadge}>
-              <Text style={{ color: '#fff', fontWeight: '800', fontSize: 16 }}>{fmt(rideTime)}</Text>
-            </View>
+          {phase === 'incoming' && secondsLeft != null && (
+            <View style={styles.timerBadge}><Text style={styles.timerText}>⏳ {fmt(secondsLeft)}</Text></View>
           )}
-        </View>
-        <View style={styles.progressRow}>
-          {['accepted', 'arrived', 'in_progress', 'completed'].map((s, i) => (
-            <View key={s} style={{ flexDirection: 'row', alignItems: 'center', flex: i < 3 ? 1 : 0 }}>
-              <View style={[styles.stepDot, { backgroundColor: STEPS.indexOf(rideStatus) >= STEPS.indexOf(s) ? '#fff' : 'rgba(255,255,255,0.3)' }]} />
-              {i < 3 && <View style={[styles.stepLine, { backgroundColor: STEPS.indexOf(rideStatus) > i ? '#fff' : 'rgba(255,255,255,0.25)' }]} />}
-            </View>
-          ))}
-        </View>
-        <View style={styles.progressLabels}>
-          {['Accepted', 'Verified', 'In Progress', 'Done'].map(l => (
-            <Text key={l} style={styles.progressLbl}>{l}</Text>
-          ))}
+          {phase === 'active' && stop?.status === 'in_progress' && (
+            <View style={styles.timerBadge}><Text style={styles.timerText}>{fmt(onBoard)}</Text></View>
+          )}
         </View>
       </LinearGradient>
 
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Map Area */}
-        <View style={styles.mapArea}>
-          <Text style={{ fontSize: 44 }}>🗺️</Text>
-          <Text style={{ color: C.muted, fontSize: 12, marginTop: 8 }}>
-            {rideStatus === 'accepted' ? 'Navigate to pickup location' : 'Ride route map'}
-          </Text>
-          {rideStatus === 'accepted' && (
-            <View style={styles.destBanner}>
-              <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>
-                📍 Pickup: {rideRequest?.pickupAddress || 'DHA Phase 5, Lahore'}
-              </Text>
-            </View>
-          )}
-        </View>
+        <OSMMap style={styles.map} center={myLoc || latLng(shown[0]?.pickupCoordinates)} zoom={14}
+          markers={markers} fitToContent={markers.length > 1} fitKey={mapFitKey} />
 
-        {/* Passenger Info Card */}
-        <View style={styles.paxCard}>
-          <View style={styles.paxRow}>
-            <View style={styles.paxAvatar}><Text style={{ fontSize: 28 }}>👩</Text></View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.paxName}>{rideRequest?.passengerName || "Passenger"}</Text>
-              <Text style={styles.paxMood}>
-                {rideRequest?.moodPreference === 'quiet' ? '🤫 Quiet ride preferred' : rideRequest?.moodPreference === 'friendly' ? '😊 Friendly ride' : '💬 Talkative ride'}{}
-              </Text>
-              {rideRequest?.isPooled && (
-                <View style={styles.poolBadge}>
-                  <Text style={{ fontSize: 10, color: C.rose, fontWeight: '700' }}>👯‍♀️ POOL RIDE</Text>
+        {/* ── Request: review, accept or decline ─────────────────────────── */}
+        {phase === 'incoming' && (
+          <>
+            {(offer?.stops || [offer]).map((s, i) => (
+              <View key={String(s.rideId || i)} style={styles.paxCard}>
+                <View style={styles.paxRow}>
+                  <View style={styles.paxAvatar}><Text style={{ fontSize: 26 }}>👩</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.paxName}>{s.passengerName || 'Passenger'}{offer?.isPooled ? ` · stop ${i + 1}` : ''}</Text>
+                    <Text style={styles.paxMood}>{MOOD_LABEL[s.moodPreference] || MOOD_LABEL.quiet}</Text>
+                    {s.passengerRating ? <Text style={styles.paxMood}>⭐ {Number(s.passengerRating).toFixed(1)}</Text> : null}
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.fareAmt}>Rs {s.fare}</Text>
+                    <Text style={styles.fareDist}>{s.distanceKm} km · ~{s.durationMin} min</Text>
+                  </View>
                 </View>
-              )}
+                <View style={styles.routeBox}>
+                  <View style={styles.routeRow}><View style={[styles.dot, { backgroundColor: C.success }]} /><Text style={styles.routeText} numberOfLines={2}>{s.pickupAddress}</Text></View>
+                  <View style={styles.routeLine} />
+                  <View style={styles.routeRow}><View style={[styles.dot, { backgroundColor: C.rose }]} /><Text style={styles.routeText} numberOfLines={2}>{s.dropoffAddress}</Text></View>
+                </View>
+              </View>
+            ))}
+            <View style={styles.actionBox}>
+              <Text style={styles.actionTitle}>
+                {offer?.isPooled ? `Total for ${offer.passengers} passengers: Rs ${offer.totalFare}` : `Fare: Rs ${offer?.fare}`}
+              </Text>
+              <Text style={styles.actionDesc}>
+                {offer?.driverDistanceKm != null ? `Pickup is about ${offer.driverDistanceKm} km from you. ` : ''}
+                {offer?.isPooled ? 'Accepting takes every passenger in this pool. ' : ''}Estimated fare — the final fare uses the actual trip.
+              </Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TouchableOpacity onPress={handleDecline} style={[styles.actionBtn, { flex: 1, backgroundColor: C.muted }]} disabled={loading}>
+                  <Text style={styles.actionBtnText}>Decline</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleAccept} style={[styles.actionBtn, { flex: 2, backgroundColor: C.success }]} disabled={loading}>
+                  {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>✓ Accept{offer?.isPooled ? ' Pool' : ' Ride'}</Text>}
+                </TouchableOpacity>
+              </View>
             </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={styles.fareAmt}>Rs. {rideRequest?.estimatedFare}</Text>
-              {rideRequest?.isPooled && (
-                <Text style={{ fontSize: 10, color: C.success, fontWeight: '600' }}>
-                  Rs. {rideRequest?.farePerPassenger || 140}/pax
-                </Text>
-              )}
-              <Text style={styles.fareDist}>{rideRequest?.distanceKm || 7.2} km</Text>
-            </View>
-          </View>
-          <View style={styles.routeBox}>
-            <View style={styles.routeRow}>
-              <View style={[styles.dot, { backgroundColor: C.success }]} />
-              <Text style={styles.routeText} numberOfLines={1}>{rideRequest?.pickupAddress || 'DHA Phase 5, Lahore'}</Text>
-            </View>
-            <View style={styles.routeLine} />
-            <View style={styles.routeRow}>
-              <View style={[styles.dot, { backgroundColor: C.rose }]} />
-              <Text style={styles.routeText} numberOfLines={1}>{rideRequest?.dropoffAddress || 'Gulberg III, Lahore'}</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* Step 0: Review the request — accept or decline */}
-        {rideStatus === 'incoming' && (
-          <View style={styles.actionBox}>
-            <Text style={styles.actionTitle}>🔔 New ride request</Text>
-            <Text style={styles.actionDesc}>Review the pickup, destination and fare above, then accept or decline.</Text>
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <TouchableOpacity onPress={() => navigation.goBack()} style={[styles.actionBtn, { flex: 1, backgroundColor: C.muted }]} disabled={loading}>
-                <Text style={styles.actionBtnText}>Decline</Text>
-              </TouchableOpacity>
-              <TouchableOpacity onPress={handleAccept} style={[styles.actionBtn, { flex: 2, backgroundColor: C.success }]} disabled={loading}>
-                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>✓ Accept Ride</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
+          </>
         )}
 
-        {/* Step 1: Arrived */}
-        {rideStatus === 'accepted' && (
-          <View style={styles.actionBox}>
-            <Text style={styles.actionTitle}>📍 Drive to the pickup location</Text>
-            <Text style={styles.actionDesc}>When you reach the passenger, tap the button below. You'll then verify passenger gender before entering OTP.</Text>
-            <TouchableOpacity onPress={handleArrived} style={[styles.actionBtn, { backgroundColor: C.info }]} disabled={loading}>
-              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>✓ I've Arrived at Pickup</Text>}
-            </TouchableOpacity>
-          </View>
-        )}
-
-        {/* Step 2: OTP (after gender verified) */}
-        {rideStatus === 'arrived' && (
-          <View style={styles.actionBox}>
-            {/* OTP failure warning */}
-            {otpFailures > 0 && (
-              <View style={[styles.warningBanner, { backgroundColor: otpFailures >= 2 ? '#FDEDEC' : '#FEF9E7' }]}>
-                <Text style={{ fontSize: 14, fontWeight: '700', color: otpFailures >= 2 ? '#C0392B' : '#F39C12' }}>
-                  ⚠️ Wrong OTP: {otpFailures}/3 attempt(s)
-                </Text>
-                <Text style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
-                  {otpFailures >= 2
-                    ? 'ONE more failure will cancel this ride and report to safety team'
-                    : 'Please verify the code with the passenger'}
-                </Text>
+        {/* ── Active trip ────────────────────────────────────────────────── */}
+        {phase === 'active' && (
+          <>
+            {/* Passenger list (several when pooled) */}
+            {stops.length > 1 && (
+              <View style={styles.stopTabs}>
+                {stops.map((s, i) => (
+                  <TouchableOpacity key={s.rideId} onPress={() => { setCurrent(s.rideId); setOtp(''); }}
+                    style={[styles.stopTab, String(s.rideId) === String(current) && styles.stopTabActive]}>
+                    <Text style={styles.stopTabName} numberOfLines={1}>{i + 1}. {s.passengerName}</Text>
+                    <Text style={[styles.stopTabStatus, { color: STATUS_LABEL[s.status]?.color }]}>{STATUS_LABEL[s.status]?.text}</Text>
+                  </TouchableOpacity>
+                ))}
               </View>
             )}
-            <Text style={styles.actionTitle}>🔐 Enter Passenger's OTP</Text>
-            <Text style={styles.actionDesc}>Ask the passenger to show their OTP and enter the 4-digit code below.</Text>
-            <View style={styles.otpRow}>
-              <TextInput
-                value={otp}
-                onChangeText={setOtp}
-                placeholder="Enter 4-digit OTP"
-                keyboardType="numeric"
-                maxLength={4}
-                style={styles.otpInput}
-                placeholderTextColor={C.muted}
-              />
-              <TouchableOpacity onPress={handleVerifyOTP} style={[styles.otpBtn, { backgroundColor: C.plum }]} disabled={loading}>
-                {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>Verify →</Text>}
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
 
-        {/* Step 3: In Progress */}
-        {rideStatus === 'in_progress' && (
-          <View style={styles.actionBox}>
-            <View style={styles.inProgressBanner}>
-              <Text style={{ fontSize: 22 }}>🚗</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 13, fontWeight: '700', color: C.success }}>Ride Verified & In Progress</Text>
-                <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>OTP confirmed — drive safely to destination</Text>
-              </View>
-            </View>
-            <View style={styles.liveStats}>
-              {[
-                { ico: '⏱️', lbl: 'Time',     val: fmt(rideTime) },
-                { ico: '📍', lbl: 'Distance', val: `${rideRequest?.distanceKm || 7.2} km` },
-                { ico: '💰', lbl: 'Earning',  val: `Rs.${rideRequest?.estimatedFare}` },
-              ].map(stat => (
-                <View key={stat.lbl} style={styles.liveStat}>
-                  <Text style={{ fontSize: 20, marginBottom: 4 }}>{stat.ico}</Text>
-                  <Text style={{ fontSize: 14, fontWeight: '800', color: C.text }}>{stat.val}</Text>
-                  <Text style={{ fontSize: 10, color: C.muted }}>{stat.lbl}</Text>
+            {stop && (
+              <View style={styles.paxCard}>
+                <View style={styles.paxRow}>
+                  <View style={styles.paxAvatar}><Text style={{ fontSize: 26 }}>👩</Text></View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.paxName}>{stop.passengerName}</Text>
+                    <Text style={styles.paxMood}>{MOOD_LABEL[stop.moodPreference] || MOOD_LABEL.quiet}</Text>
+                  </View>
+                  <View style={{ alignItems: 'flex-end' }}>
+                    <Text style={styles.fareAmt}>Rs {stop.finalFare ?? stop.fare}</Text>
+                    {!!stop.passengerPhone && ACTIVE.includes(stop.status) && (
+                      <TouchableOpacity onPress={() => callPassenger(stop.passengerPhone)}><Text style={styles.callLink}>📞 Call</Text></TouchableOpacity>
+                    )}
+                  </View>
                 </View>
-              ))}
-            </View>
-            <Text style={styles.actionDesc}>Tap when you have safely dropped off the passenger.</Text>
-            <TouchableOpacity onPress={handleComplete} style={[styles.actionBtn, { backgroundColor: C.rose }]} disabled={loading}>
-              {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>🏁 Complete Ride</Text>}
-            </TouchableOpacity>
-          </View>
+                <View style={styles.routeBox}>
+                  <View style={styles.routeRow}><View style={[styles.dot, { backgroundColor: C.success }]} /><Text style={styles.routeText} numberOfLines={2}>{stop.pickupAddress}</Text></View>
+                  <View style={styles.routeLine} />
+                  <View style={styles.routeRow}><View style={[styles.dot, { backgroundColor: C.rose }]} /><Text style={styles.routeText} numberOfLines={2}>{stop.dropoffAddress}</Text></View>
+                </View>
+              </View>
+            )}
+
+            {stop?.status === 'accepted' && (
+              <View style={styles.actionBox}>
+                <Text style={styles.actionTitle}>📍 Drive to {stop.passengerName}'s pickup</Text>
+                <Text style={styles.actionDesc}>When you reach her, tap below. You'll then confirm she is female and enter her OTP.</Text>
+                <TouchableOpacity onPress={handleArrived} style={[styles.actionBtn, { backgroundColor: C.info }]} disabled={loading}>
+                  {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>✓ I've Arrived at Pickup</Text>}
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {stop?.status === 'arrived' && (
+              <View style={styles.actionBox}>
+                {stop.otpFailures > 0 && (
+                  <View style={[styles.warningBanner, { backgroundColor: stop.otpFailures >= 2 ? '#FDEDEC' : '#FEF9E7' }]}>
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: stop.otpFailures >= 2 ? '#C0392B' : '#F39C12' }}>
+                      ⚠️ Wrong OTP: {stop.otpFailures}/3 attempt(s)
+                    </Text>
+                    <Text style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
+                      {stop.otpFailures >= 2 ? 'ONE more failure will cancel this ride and report it to the safety team' : 'Please check the code with the passenger'}
+                    </Text>
+                  </View>
+                )}
+                <Text style={styles.actionTitle}>🔐 Enter {stop.passengerName}'s OTP</Text>
+                <Text style={styles.actionDesc}>Ask her to show the 4-digit code on her phone. The ride starts only if it matches.</Text>
+                <View style={styles.otpRow}>
+                  <TextInput value={otp} onChangeText={v => setOtp(v.replace(/\D/g, '').slice(0, 4))}
+                    placeholder="4-digit OTP" keyboardType="number-pad" maxLength={4}
+                    style={styles.otpInput} placeholderTextColor={C.muted} />
+                  <TouchableOpacity onPress={handleVerifyOTP} style={[styles.otpBtn, { backgroundColor: C.plum }]} disabled={loading}>
+                    {loading ? <ActivityIndicator color="#fff" size="small" /> : <Text style={{ color: '#fff', fontWeight: '700', fontSize: 14 }}>Verify →</Text>}
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {stop?.status === 'in_progress' && (
+              <View style={styles.actionBox}>
+                <View style={styles.inProgressBanner}>
+                  <Text style={{ fontSize: 22 }}>🚗</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: C.success }}>{stop.passengerName} is on board</Text>
+                    <Text style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>OTP confirmed — drive safely to her drop-off</Text>
+                  </View>
+                </View>
+                <Text style={styles.actionDesc}>Tap when she has been dropped off safely. The final fare is calculated from the actual trip.</Text>
+                <TouchableOpacity onPress={handleComplete} style={[styles.actionBtn, { backgroundColor: C.rose }]} disabled={loading}>
+                  {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>🏁 Complete {stop.passengerName}'s Ride</Text>}
+                </TouchableOpacity>
+              </View>
+            )}
+          </>
         )}
 
         <View style={{ height: 40 }} />
@@ -490,4 +558,13 @@ const styles = StyleSheet.create({
   doneLbl:          { color: 'rgba(255,255,255,0.65)', fontSize: 12 },
   doneVal:          { color: '#fff', fontSize: 13, fontWeight: '700' },
   homeBtn:          { backgroundColor: '#fff', borderRadius: 18, paddingHorizontal: 32, paddingVertical: 16 },
+  // Phase 3
+  map:              { height: 220 },
+  timerText:        { color: '#fff', fontWeight: '800', fontSize: 15 },
+  callLink:         { color: C.info, fontWeight: '700', fontSize: 12, marginTop: 4 },
+  stopTabs:         { flexDirection: 'row', gap: 8, marginHorizontal: 14, marginTop: 14 },
+  stopTab:          { flex: 1, padding: 10, borderRadius: 14, borderWidth: 2, borderColor: C.border, backgroundColor: C.white },
+  stopTabActive:    { borderColor: C.rose, backgroundColor: C.rosePale },
+  stopTabName:      { fontSize: 12, fontWeight: '700', color: C.text },
+  stopTabStatus:    { fontSize: 10, fontWeight: '700', marginTop: 2 },
 });

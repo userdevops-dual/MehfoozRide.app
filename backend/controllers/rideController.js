@@ -295,7 +295,7 @@ exports.acceptRide = async (req, res) => {
         console.log(`📱 [DEMO — SMS NOT SENT] Guardian notice: driver assigned for ${r.passenger.name}`);
         guardians.forEach(g => console.log(`  → ${g.name} (${g.phone}): Driver ${driver.name} | ${driverInfo.licensePlate} is on the way`));
       }
-      matching.withdrawOffer(r, "accepted_by_other_driver");
+      matching.withdrawOffer(r, "accepted_by_other_driver", req.user.id);
     }
 
     // Driver-facing view: no guardian contacts, no OTPs

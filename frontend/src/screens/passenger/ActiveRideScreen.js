@@ -12,18 +12,16 @@ import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import { rideAPI } from '../../services/api';
 import {
-  emitSOS, onDriverLocation, onRouteDeviation, onRideStarted, onRideFinished,
+  emitSOS, onDriverLocation, onRouteDeviation, onRideStarted, onRideFinished, onRideCancelled,
   onGuardianNotified, onOTPWarning, onFakeRideAlert, offEvent,
 } from '../../services/socket';
 import { useAuth } from '../../context/AuthContext';
 import { C, GRAD } from '../../utils/theme';
 
-const BASE_FARE    = 80;
-const RATE_PER_KM  = 25;
-const RATE_PER_MIN = 5;
+const LIVE_FARE_REFRESH_MS = 20000;
 
 export default function ActiveRideScreen({ navigation, route }) {
-  const { ride, driver } = route?.params || { ride: DEMO_RIDE, driver: DEMO_DRIVER };
+  const { ride, driver } = route?.params || {};
 
   const [rideTime,          setRideTime]          = useState(0);
   // ── FIXED: otpVerified starts false; becomes true when driver enters OTP ──
@@ -33,46 +31,40 @@ export default function ActiveRideScreen({ navigation, route }) {
   const [showOtpModal,      setShowOtpModal]       = useState(true);
   const [driverLoc,         setDriverLoc]          = useState(null);
   const [myLocation,        setMyLocation]         = useState(null);
-  const [liveFare,          setLiveFare]           = useState(ride?.estimatedFare || 280);
+  // Live fare comes from the server (same rules as the final fare): driver's GPS track + elapsed time
+  const [liveFare,          setLiveFare]           = useState(ride?.farePerPassenger || ride?.estimatedFare || null);
   const [distanceTravelled, setDistanceTravelled]  = useState(0);
   const [showSafeDropMenu,  setShowSafeDropMenu]   = useState(false);
   const [guardianBanner,    setGuardianBanner]     = useState(null);
   const [deviationAlert,    setDeviationAlert]     = useState(false);
-  const [poolFarePerPax,    setPoolFarePerPax]     = useState(ride?.farePerPassenger || 0);
 
   const { user } = useAuth();
-  const prevLoc   = useRef(null);
   const startTime = useRef(null);
   const rideTimeRef = useRef(0); // latest values for socket callbacks registered once
   rideTimeRef.current = rideTime;
   const myLocationRef = useRef(null);
   myLocationRef.current = myLocation;
 
-  // ── Passenger GPS tracking ────────────────────────────────────────────────
+  // ── Passenger GPS (for the map and SOS) ──────────────────────────────────
   useEffect(() => {
     const watchId = Geolocation.watchPosition(
-      pos => {
-        const newLoc = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
-        setMyLocation(newLoc);
-        if (prevLoc.current && otpVerified) {
-          const d = haversine(prevLoc.current, newLoc);
-          setDistanceTravelled(prev => {
-            const total   = prev + d;
-            const elapsed = startTime.current ? Math.round((Date.now() - startTime.current) / 60000) : 0;
-            const fare    = BASE_FARE + total * RATE_PER_KM + elapsed * RATE_PER_MIN;
-            const final   = Math.round(Math.max(fare, 50));
-            setLiveFare(ride?.isPooled ? Math.ceil(final / 2) : final);
-            setPoolFarePerPax(ride?.isPooled ? Math.ceil(final / 2) : 0);
-            return total;
-          });
-        }
-        prevLoc.current = newLoc;
-      },
+      pos => setMyLocation({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
       // On GPS error keep the last real fix — never substitute a made-up location
       () => {},
       { enableHighAccuracy: true, distanceFilter: 10 }
     );
     return () => Geolocation.clearWatch(watchId);
+  }, []);
+
+  // ── Live fare from the server while the ride is in progress ──────────────
+  useEffect(() => {
+    if (!otpVerified || !ride?._id) return;
+    const load = () => rideAPI.getLiveFare(ride._id)
+      .then(res => { setLiveFare(res.liveFare); setDistanceTravelled(res.travelledKm || 0); })
+      .catch(() => {});        // keep the last known value
+    load();
+    const t = setInterval(load, LIVE_FARE_REFRESH_MS);
+    return () => clearInterval(t);
   }, [otpVerified]);
 
   // ── Sync with server on open — the ride may have started while we were on another screen
@@ -149,6 +141,14 @@ export default function ActiveRideScreen({ navigation, route }) {
       ]);
     });
 
+    // The driver cancelled (e.g. could not reach the pickup)
+    const offCancelled = onRideCancelled(data => {
+      if (String(data?.rideId) !== String(ride?._id)) return;
+      Alert.alert('Ride Cancelled', data.message || 'This ride was cancelled.', [
+        { text: 'OK', onPress: () => navigation.replace('PassengerHome') },
+      ]);
+    });
+
     return () => {
       offEvent('driver:location:update');
       offEvent('ride:route-deviation');
@@ -157,6 +157,7 @@ export default function ActiveRideScreen({ navigation, route }) {
       offEvent('ride:started');
       offEvent('ride:finished');
       offEvent('ride:fake-ride-alert');
+      offCancelled && offCancelled();
     };
   }, []);
 
@@ -329,10 +330,10 @@ export default function ActiveRideScreen({ navigation, route }) {
       {/* Top Info Bar */}
       <LinearGradient colors={[C.plum, C.rose]} style={styles.topBar}>
         <View>
-          <Text style={styles.driverName}>🚗 {driver?.name || 'Fatima Malik'}</Text>
+          <Text style={styles.driverName}>🚗 {driver?.name || 'Your driver'}</Text>
           <Text style={styles.driverSub}>
-            {driver?.driverDetails?.vehicleMake || driver?.vehicle || 'Toyota'} ·{' '}
-            {driver?.driverDetails?.licensePlate || driver?.licensePlate || 'ABC-1234'}
+            {driver?.driverDetails?.vehicleMake || driver?.vehicle || ''} ·{' '}
+            {driver?.driverDetails?.licensePlate || driver?.licensePlate || ''}
           </Text>
         </View>
         {otpVerified
@@ -349,8 +350,8 @@ export default function ActiveRideScreen({ navigation, route }) {
       {otpVerified && (
         <View style={styles.fareBar}>
           <View style={{ alignItems: 'center' }}>
-            <Text style={styles.fareText}>💰 Rs. {liveFare}</Text>
-            {ride?.isPooled && <Text style={{ fontSize: 9, color: C.rose }}>Rs.{poolFarePerPax}/pax</Text>}
+            <Text style={styles.fareText}>💰 {liveFare != null ? `Rs. ${liveFare}` : '—'}</Text>
+            {!!ride?.pool && <Text style={{ fontSize: 9, color: C.rose }}>pooled share</Text>}
           </View>
           <Text style={styles.fareText}>📍 {distanceTravelled.toFixed(1)} km</Text>
           <Text style={styles.fareText}>⏱️ {fmt(rideTime)}</Text>
@@ -407,17 +408,7 @@ export default function ActiveRideScreen({ navigation, route }) {
   );
 }
 
-function haversine(a, b) {
-  const R    = 6371;
-  const dLat = (b.latitude  - a.latitude)  * Math.PI / 180;
-  const dLon = (b.longitude - a.longitude) * Math.PI / 180;
-  const s    = Math.sin(dLat / 2) ** 2 +
-    Math.cos(a.latitude * Math.PI / 180) * Math.cos(b.latitude * Math.PI / 180) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(s), Math.sqrt(1 - s));
-}
 
-const DEMO_RIDE   = { otp: '7842', estimatedFare: 280, isPooled: false, pickupLocation: { address: 'DHA Phase 5' }, dropoffLocation: { address: 'Gulberg III' } };
-const DEMO_DRIVER = { name: 'Fatima Malik', driverDetails: { vehicleMake: 'Toyota', licensePlate: 'LHR-1234' } };
 
 const styles = StyleSheet.create({
   screen:              { flex: 1, backgroundColor: C.bg },

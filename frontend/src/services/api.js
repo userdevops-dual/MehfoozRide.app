@@ -59,6 +59,7 @@ export const rideAPI = {
   estimate:  (data)       => api.post('/rides/estimate', data, { timeout: 30000 }).then(r => r.data),
   book:      (data)       => api.post('/rides', data, { timeout: 30000 }).then(r => r.data),
   accept:    (rideId)     => api.put(`/rides/${rideId}/accept`).then(r => r.data),
+  decline:   (rideId)     => api.put(`/rides/${rideId}/decline`).then(r => r.data),
   arrived:   (rideId)     => api.put(`/rides/${rideId}/arrived`).then(r => r.data),
   verifyOTP: (rideId, otp)=> api.post(`/rides/${rideId}/verify-otp`, { otp }).then(r => r.data),
   complete:  (rideId)     => api.put(`/rides/${rideId}/complete`).then(r => r.data),

@@ -124,6 +124,13 @@ The login screen has quick-fill buttons for one passenger, one driver and the ad
 Wrong OTP 3 times → ride auto-cancels and is flagged as a possible fake ride.
 Admin panel: driver approvals, background checks, SOS incidents, fake rides, live rides, stats.
 
+### Matching, fares and pooling (Phase 3)
+
+- **Matching** — the server offers a request to the 5 nearest online, free drivers within 5 km whose GPS was updated in the last 3 minutes (`backend/config/appConfig.js` → `matching`). Unanswered requests expire after 2 minutes; drivers can decline.
+- **Fares** — one place: `backend/config/fare.js` (base 80 + 25/km + 5/min, minimum 50, AC +50, bike −50). The final fare uses the GPS-tracked distance when it is plausible (60–200 % of the planned route), otherwise the planned route.
+- **Pooling** — passengers who tick *Share ride* are grouped when pickups are within 1.5 km, drop-offs within 2.5 km and directions within 35°, up to 3 passengers. Each pays a share of (longest trip × 1.15 per extra passenger), in proportion to her solo fare; if nobody joins she pays the normal fare. The driver accepts the whole pool and handles each passenger (arrive → gender check → OTP → complete) separately.
+- **Mood** — Talkative / Quiet / Introvert, shown to the driver on the request.
+
 ---
 
 ## 7. What is simulated (say so in the presentation)

@@ -1,30 +1,33 @@
 // src/screens/passenger/FindingDriverScreen.js
+// Waiting for a driver. The server offers the request to nearby drivers, expires
+// it if nobody accepts in time, and tells this screen about pool matches.
 import React, {useEffect, useRef, useState} from 'react';
 import {View, Text, StyleSheet, Animated, Alert, TouchableOpacity} from 'react-native';
-import {onDriverFound, offEvent} from '../../services/socket';
+import {onDriverFound, onPoolUpdated, onRideExpired} from '../../services/socket';
 import {rideAPI} from '../../services/api';
 import {C, GRAD} from '../../utils/theme';
 import LinearGradient from 'react-native-linear-gradient';
 
-// If no driver accepts within this time, the ride is cancelled on the server
-const SEARCH_TIMEOUT_SECONDS = 120;
+const FALLBACK_TIMEOUT_SECONDS = 120;
 
 export default function FindingDriverScreen({navigation, route}) {
-  const {ride} = route.params;
-  const [elapsed, setElapsed] = useState(0);
+  const {ride: bookedRide, pool: bookedPool, driversNotified} = route.params;
+  const [ride, setRide] = useState(bookedRide);
+  const [pool, setPool] = useState(bookedPool || null);   // { passengers, yourFare, soloFare }
+  const [now, setNow]   = useState(Date.now());
   const anim = useRef(new Animated.Value(0)).current;
   const done = useRef(false);
 
-  const cancelSearch = async (reason) => {
-    if (done.current) return;
-    done.current = true;
-    try { await rideAPI.cancel(ride._id, reason); } catch (_) {}
-  };
+  const startedAt = useRef(Date.now()).current;
+  const expiresAt = ride.requestExpiresAt ? new Date(ride.requestExpiresAt).getTime() : startedAt + FALLBACK_TIMEOUT_SECONDS * 1000;
+  const total     = Math.max(1, expiresAt - startedAt);
+  const remaining = Math.max(0, Math.ceil((expiresAt - now) / 1000));
+
+  const finish = (fn) => { if (done.current) return; done.current = true; fn(); };
 
   useEffect(() => {
-    const interval = setInterval(() => setElapsed(s => s + 1), 1000);
+    const interval = setInterval(() => setNow(Date.now()), 1000);
 
-    // Pulse animation
     Animated.loop(
       Animated.sequence([
         Animated.timing(anim, {toValue:1, duration:900, useNativeDriver:true}),
@@ -32,37 +35,63 @@ export default function FindingDriverScreen({navigation, route}) {
       ])
     ).start();
 
-    // Real driver accepted the ride (sent by the server after a successful accept)
-    onDriverFound((data) => {
-      if (data?.rideId?.toString() !== ride._id?.toString() || done.current) return;
-      done.current = true;
-      navigation.replace('DriverFound', {ride, driver: data.driver});
-    });
+    const subs = [
+      // A driver accepted (sent by the server)
+      onDriverFound((data) => {
+        if (String(data?.rideId) !== String(ride._id)) return;
+        finish(() => navigation.replace('DriverFound', {
+          ride: { ...ride, ...(data.pool ? { farePerPassenger: data.pool.yourFare, poolPassengers: data.pool.passengers } : {}) },
+          driver: data.driver,
+        }));
+      }),
+      // Another passenger joined (or left) the pool
+      onPoolUpdated((data) => {
+        if (String(data?.rideId) !== String(ride._id)) return;
+        setPool(data.pooled ? { passengers: data.passengers, yourFare: data.yourFare, soloFare: data.soloFare } : null);
+        setRide(r => ({ ...r, farePerPassenger: data.yourFare }));
+      }),
+      // Nobody accepted in time — the server cancelled the request
+      onRideExpired((data) => {
+        if (String(data?.rideId) !== String(ride._id)) return;
+        finish(() => Alert.alert('No Drivers Available', data.message || 'No driver accepted your ride. Please try again in a few minutes.', [
+          {text: 'OK', onPress: () => navigation.replace('PassengerHome')},
+        ]));
+      }),
+    ];
 
-    // No driver in time — cancel instead of showing a made-up driver
-    const timeout = setTimeout(async () => {
+    // Safety net if the expiry message is missed (e.g. connection dropped):
+    // ask the server what happened to the ride.
+    const check = setTimeout(async () => {
       if (done.current) return;
-      await cancelSearch('No driver available');
-      Alert.alert('No Drivers Available', 'No verified driver accepted your ride. Please try again in a few minutes.', [
-        {text: 'OK', onPress: () => navigation.replace('PassengerHome')},
-      ]);
-    }, SEARCH_TIMEOUT_SECONDS * 1000);
+      try {
+        const res = await rideAPI.getById(ride._id);
+        const status = res.ride?.status;
+        if (status === 'requested') return;
+        if (status === 'cancelled') {
+          finish(() => Alert.alert('Ride Not Matched', 'No driver accepted your ride in time. Please try again.', [
+            {text: 'OK', onPress: () => navigation.replace('PassengerHome')},
+          ]));
+        } else if (res.ride?.driver) {
+          finish(() => navigation.replace('DriverFound', { ride: { ...ride, ...res.ride, otp: ride.otp }, driver: res.ride.driver }));
+        }
+      } catch {}
+    }, Math.max(0, expiresAt - Date.now()) + 15000);
 
-    return () => { clearInterval(interval); clearTimeout(timeout); offEvent('ride:driver-found'); };
+    return () => { clearInterval(interval); clearTimeout(check); subs.forEach(off => off && off()); };
   }, []);
 
   const onCancelPress = () => {
     Alert.alert('Cancel Ride?', 'Stop searching for a driver?', [
       {text: 'Keep Searching', style: 'cancel'},
       {text: 'Cancel Ride', style: 'destructive', onPress: async () => {
-        await cancelSearch('Cancelled by passenger while searching');
-        navigation.replace('PassengerHome');
+        try { await rideAPI.cancel(ride._id, 'Cancelled by passenger while searching'); } catch {}
+        finish(() => navigation.replace('PassengerHome'));
       }},
     ]);
   };
 
   const scale = anim.interpolate({inputRange:[0,1], outputRange:[1, 1.08]});
-  const progress = Math.min(100, Math.round((elapsed / SEARCH_TIMEOUT_SECONDS) * 100));
+  const progress = Math.min(100, Math.round(((now - startedAt) / total) * 100));
 
   return (
     <LinearGradient colors={GRAD.primary} style={styles.screen}>
@@ -75,17 +104,32 @@ export default function FindingDriverScreen({navigation, route}) {
           ]} />
         ))}
         <View style={styles.carCircle}>
-          <Text style={{fontSize:52}}>🚗</Text>
+          <Text style={{fontSize:52}}>{pool ? '👯‍♀️' : '🚗'}</Text>
         </View>
       </View>
 
       <Text style={styles.title}>Finding Your Safe Driver</Text>
-      <Text style={styles.subtitle}>Searching verified female drivers{'\n'}near you in Lahore...</Text>
+      <Text style={styles.subtitle}>
+        {driversNotified > 0
+          ? `Request sent to ${driversNotified} verified female driver${driversNotified > 1 ? 's' : ''} nearby…`
+          : 'No drivers are free nearby right now.\nWe will keep offering your ride as drivers come online.'}
+      </Text>
 
       <View style={styles.progressBar}>
         <View style={[styles.progressFill, {width:`${progress}%`}]} />
       </View>
-      <Text style={styles.progressText}>Searching… {elapsed}s</Text>
+      <Text style={styles.progressText}>Waiting for a driver… {Math.floor(remaining / 60)}:{String(remaining % 60).padStart(2, '0')} left</Text>
+
+      {pool ? (
+        <View style={styles.poolCard}>
+          <Text style={styles.poolTitle}>👯‍♀️ Pool matched — {pool.passengers} passengers</Text>
+          <Text style={styles.poolText}>Your fare is now about Rs {pool.yourFare} (instead of Rs {pool.soloFare}).</Text>
+        </View>
+      ) : ride.isPooled ? (
+        <View style={styles.poolCard}>
+          <Text style={styles.poolText}>Pooling is on — we'll match you if a verified passenger is going your way. Otherwise you pay the normal fare.</Text>
+        </View>
+      ) : null}
 
       <View style={styles.tags}>
         {['✅ ID Verified','🛡️ Safety Checked','♀ Female Drivers Only'].map(t=>(
@@ -99,7 +143,6 @@ export default function FindingDriverScreen({navigation, route}) {
     </LinearGradient>
   );
 }
-
 
 const styles = StyleSheet.create({
   screen:      {flex:1, alignItems:'center', justifyContent:'center', padding:32},
@@ -117,4 +160,7 @@ const styles = StyleSheet.create({
   tagText:     {color:'#fff', fontSize:11, fontWeight:'700'},
   cancelBtn:   {marginTop:32, paddingHorizontal:28, paddingVertical:12, borderRadius:24, borderWidth:1.5, borderColor:'rgba(255,255,255,0.7)'},
   cancelText:  {color:'#fff', fontWeight:'700', fontSize:14},
+  poolCard:    {backgroundColor:'rgba(255,255,255,0.18)', borderRadius:16, padding:14, marginBottom:20, width:'100%'},
+  poolTitle:   {color:'#fff', fontWeight:'800', fontSize:14, marginBottom:4},
+  poolText:    {color:'rgba(255,255,255,0.92)', fontSize:12, lineHeight:18},
 });

@@ -11,7 +11,6 @@ import {
   ActivityIndicator, TextInput, Keyboard,
 } from 'react-native';
 import { rideAPI, geoAPI } from '../../services/api';
-import { emitNewRideRequest } from '../../services/socket';
 import { getCurrentLocation, openLocationSettings, LocationError, LOW_ACCURACY_METERS } from '../../services/location';
 import OSMMap from '../../components/OSMMap';
 import { PrimaryBtn } from '../../components/UI';
@@ -24,9 +23,10 @@ const RIDE_TYPES = [
 ];
 
 const MOODS = [
-  { id: 'quiet',     icon: '🤫', label: 'Quiet',    desc: 'No chat' },
-  { id: 'friendly',  icon: '😊', label: 'Friendly', desc: 'Light chat' },
-  { id: 'talkative', icon: '💬', label: 'Talkative',desc: 'Very social' },
+  // Stored with the ride and shown to the driver with the request
+  { id: 'talkative', icon: '💬', label: 'Talkative', desc: 'Happy to chat' },
+  { id: 'quiet',     icon: '🤫', label: 'Quiet',     desc: 'Little talk' },
+  { id: 'introvert', icon: '🎧', label: 'Introvert', desc: 'Minimal conversation' },
 ];
 
 const ROUTE_COLORS = { selected: '#C84B7A', other: '#9AA0A6' };
@@ -175,8 +175,8 @@ export default function BookingScreen({ navigation }) {
         isPooled:           pooling,
         rideType,
       });
-      emitNewRideRequest(res.ride._id);
-      navigation.navigate('FindingDriver', { ride: res.ride });
+      // The server offers the request to nearby drivers itself
+      navigation.navigate('FindingDriver', { ride: res.ride, pool: res.pool, driversNotified: res.driversNotified });
     } catch (err) {
       const d = err?.response?.data;
       if (d?.rideId) {
@@ -342,7 +342,7 @@ export default function BookingScreen({ navigation }) {
                     </Text>
                     <Text style={styles.routeSub}>{r.distanceKm} km · about {r.durationMin} min</Text>
                   </View>
-                  <Text style={[styles.routeFare, i === selectedRoute && { color: C.rose }]}>Rs {r.fare.farePerPassenger}</Text>
+                  <Text style={[styles.routeFare, i === selectedRoute && { color: C.rose }]}>Rs {r.fare.total}</Text>
                   {i === selectedRoute && <View style={styles.check}><Text style={{ color: '#fff', fontWeight: '700' }}>✓</Text></View>}
                 </TouchableOpacity>
               ))}
@@ -391,8 +391,13 @@ export default function BookingScreen({ navigation }) {
           {/* Pooling */}
           <View style={[styles.poolCard, pooling && styles.poolCardActive]}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.poolTitle}>👯‍♀️ Ride Pooling</Text>
-              <Text style={styles.poolDesc}>Share with verified women and split the fare</Text>
+              <Text style={styles.poolTitle}>👯‍♀️ Allow Ride Pooling</Text>
+              <Text style={styles.poolDesc}>Share with up to 2 verified women going your way</Text>
+              {pooling && route?.poolFare != null && (
+                <Text style={styles.poolNote}>
+                  If a passenger joins: about Rs {route.poolFare}. If nobody joins, you pay the normal fare (Rs {route.fare.total}).
+                </Text>
+              )}
             </View>
             <TouchableOpacity onPress={() => setPooling(!pooling)}
               style={[styles.poolToggle, pooling && styles.poolToggleActive]}>
@@ -408,7 +413,7 @@ export default function BookingScreen({ navigation }) {
                 { lbl: 'Base fare',                                   val: `Rs ${fare.baseFare}` },
                 { lbl: `Distance (${route.distanceKm} km)`,           val: `Rs ${fare.distanceFare}` },
                 { lbl: `Time (about ${route.durationMin} min)`,       val: `Rs ${fare.timeFare}` },
-                ...(fare.discount ? [{ lbl: 'Pool discount', val: `− Rs ${fare.discount}`, green: true }] : []),
+                ...(fare.surcharge ? [{ lbl: 'Vehicle type', val: `${fare.surcharge > 0 ? '+' : '−'} Rs ${Math.abs(fare.surcharge)}` }] : []),
               ].map((row, i) => (
                 <View key={i} style={styles.fareRow}>
                   <Text style={[styles.fareLabel, row.green && { color: C.success }]}>{row.lbl}</Text>
@@ -416,15 +421,21 @@ export default function BookingScreen({ navigation }) {
                 </View>
               ))}
               <View style={[styles.fareRow, styles.fareTotalRow]}>
-                <Text style={styles.fareTotalLabel}>{pooling ? 'Your share (estimate)' : 'Total (estimate)'}</Text>
-                <Text style={styles.fareTotal}>Rs {fare.farePerPassenger}</Text>
+                <Text style={styles.fareTotalLabel}>Total (estimate)</Text>
+                <Text style={styles.fareTotal}>Rs {fare.total}</Text>
               </View>
+              {pooling && route.poolFare != null && (
+                <View style={styles.fareRow}>
+                  <Text style={[styles.fareLabel, { color: C.success }]}>If pooled with one passenger</Text>
+                  <Text style={[styles.fareValue, { color: C.success }]}>about Rs {route.poolFare}</Text>
+                </View>
+              )}
               <Text style={styles.hint}>Final fare is calculated from the actual trip distance and time.</Text>
             </View>
           )}
 
           <PrimaryBtn
-            title={booking ? 'Booking…' : fare ? `Book Ride — Rs ${fare.farePerPassenger} 🌸` : 'Book Ride'}
+            title={booking ? 'Booking…' : fare ? `Book Ride — Rs ${fare.total} 🌸` : 'Book Ride'}
             onPress={handleBook}
             loading={booking}
             disabled={!pickup || !dropoff || !route || estimate.loading}
@@ -509,6 +520,7 @@ const styles = StyleSheet.create({
   poolCardActive:   { borderColor: C.rose, backgroundColor: C.rosePale },
   poolTitle:        { fontSize: 14, fontWeight: '700', color: C.text },
   poolDesc:         { fontSize: 11, color: C.muted, marginTop: 2 },
+  poolNote:         { fontSize: 11, color: C.success, marginTop: 6, fontWeight: '600', lineHeight: 16 },
   poolToggle:       { backgroundColor: C.muted, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 8 },
   poolToggleActive: { backgroundColor: C.rose },
 

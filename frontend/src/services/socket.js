@@ -30,14 +30,6 @@ export const disconnectSocket = () => {
 };
 
 // ── Emit Helpers ────────────────────────────────────────────────────────────
-export const emitNewRideRequest = (rideId) => {
-  socket?.emit('ride:new-request', { rideId });
-};
-
-export const emitRideAccepted = (rideId) => {
-  socket?.emit('ride:accepted', { rideId });
-};
-
 export const emitDriverArrived = (rideId) => {
   socket?.emit('ride:driver-arrived', { rideId });
 };
@@ -58,8 +50,9 @@ export const emitSOS = (rideId, coordinates) => {
   socket?.emit('sos:activated', { rideId, coordinates });
 };
 
-export const emitDriverLocation = (coordinates, rideId) => {
-  socket?.emit('driver:location', { coordinates, rideId });
+// rideIds: the driver's active ride(s) — several when pooled (empty when idle)
+export const emitDriverLocation = (coordinates, rideIds = []) => {
+  socket?.emit('driver:location', { coordinates, rideIds: [].concat(rideIds || []).filter(Boolean) });
 };
 
 export const emitDriverOnline = (isOnline) => {
@@ -67,8 +60,10 @@ export const emitDriverOnline = (isOnline) => {
 };
 
 // ── Listen Helpers ───────────────────────────────────────────────────────────
+// Returns a function that removes just this listener (other screens keep theirs)
 export const onEvent = (event, callback) => {
   socket?.on(event, callback);
+  return () => socket?.off(event, callback);
 };
 
 export const onIncomingRide     = (callback) => onEvent('ride:incoming', callback);
@@ -81,7 +76,13 @@ export const onRouteDeviation   = (callback) => onEvent('ride:route-deviation', 
 export const onGuardianNotified = (callback) => onEvent('guardian:notified', callback);
 export const onOTPWarning       = (callback) => onEvent('ride:otp-warning', callback);
 export const onFakeRideAlert    = (callback) => onEvent('ride:fake-ride-alert', callback);
+export const onPoolUpdated      = (callback) => onEvent('ride:pool-updated', callback);
+export const onRideExpired      = (callback) => onEvent('ride:expired', callback);
+export const onRideCancelled    = (callback) => onEvent('ride:cancelled', callback);
+export const onRequestWithdrawn = (callback) => onEvent('ride:request-withdrawn', callback);
+export const onDriverStatus     = (callback) => onEvent('driver:status-updated', callback);
 
+// Removes every listener for an event — prefer the function returned by onEvent
 export const offEvent = (event) => {
   socket?.off(event);
 };

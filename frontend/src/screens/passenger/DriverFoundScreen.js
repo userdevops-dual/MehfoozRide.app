@@ -17,7 +17,7 @@ const dial = (number) => {
 };
 
 export default function DriverFoundScreen({ navigation, route }) {
-  const { ride, driver } = route.params || { ride: DEMO_RIDE, driver: DEMO_DRIVER };
+  const { ride, driver } = route.params || {};
 
   const cancelForSafety = async () => {
     try {
@@ -35,11 +35,15 @@ export default function DriverFoundScreen({ navigation, route }) {
   const [faceConfirmed,   setFaceConfirmed]   = useState(false);
   const [verified,        setVerified]         = useState(false);
 
-  const driverName    = driver?.name          || 'Fatima Malik';
-  const driverRating  = driver?.rating        || driver?.averageRating || '4.9';
-  const driverVehicle = driver?.vehicle       || `${driver?.driverDetails?.vehicleMake || 'Toyota'} ${driver?.driverDetails?.vehicleModel || 'Corolla'}`;
-  const driverPlate   = driver?.licensePlate  || driver?.driverDetails?.licensePlate || 'LHR-1234';
-  const driverColor   = driver?.vehicleColor  || driver?.driverDetails?.vehicleColor || 'White';
+  // Real values only — '—' where the driver has not provided something
+  const driverName    = driver?.name || 'Your driver';
+  const ratingValue   = driver?.rating ?? (driver?.totalRatings ? driver?.averageRating : null);
+  const driverRating  = ratingValue ? Number(ratingValue).toFixed(1) : 'New driver';
+  const driverVehicle = driver?.vehicle || [driver?.driverDetails?.vehicleMake, driver?.driverDetails?.vehicleModel].filter(Boolean).join(' ') || '—';
+  const driverPlate   = driver?.licensePlate || driver?.driverDetails?.licensePlate || '—';
+  const driverColor   = driver?.vehicleColor || driver?.driverDetails?.vehicleColor || '—';
+  const yourFare      = ride?.farePerPassenger || ride?.estimatedFare;
+  const pooled        = (ride?.poolPassengers || 0) > 1;
 
   // ── Passenger confirms driver identity before entering car ────────────────
   const handleConfirmDriver = () => {
@@ -192,9 +196,12 @@ export default function DriverFoundScreen({ navigation, route }) {
         </View>
 
         <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap', marginBottom: 14 }}>
-          <Badge text="✅ ID Verified"         color={C.success} bg={C.successBg} />
-          <Badge text="🛡️ Background Checked"  color={C.rose}    bg={C.rosePale}  />
-          <Badge text="⭐ Top Rated"            color="#B07030"   bg={C.goldLight} />
+          {/* From the server: approved by admin AND background check passed */}
+          {driver?.verified
+            ? <Badge text="✅ Verified Female Driver" color={C.success} bg={C.successBg} />
+            : <Badge text="⏳ Verification pending" color="#B07030" bg={C.goldLight} />}
+          {driver?.totalRides > 0 && <Badge text={`🚗 ${driver.totalRides} rides`} color={C.rose} bg={C.rosePale} />}
+          {pooled && <Badge text={`👯‍♀️ Pooled · ${ride.poolPassengers} passengers`} color={C.plum} bg="#F5E4F5" />}
           <Badge text="♀ Female Driver"        color={C.plum}    bg="#F5E4F5"     />
         </View>
 
@@ -243,8 +250,8 @@ export default function DriverFoundScreen({ navigation, route }) {
         <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
           {[
             { ico: '⏱️', lbl: 'ETA',      v: '4 min'  },
-            { ico: '📍', lbl: 'Distance', v: `${ride?.distanceKm || 7.2} km` },
-            { ico: '💰', lbl: 'Fare',     v: `Rs.${ride?.estimatedFare || 280}` },
+            { ico: '📍', lbl: 'Distance', v: ride?.distanceKm ? `${ride.distanceKm} km` : '—' },
+            { ico: '💰', lbl: pooled ? 'Your share' : 'Fare', v: yourFare ? `Rs.${yourFare}` : '—' },
           ].map(s => (
             <View key={s.lbl} style={styles.stat}>
               <Text style={{ fontSize: 22, marginBottom: 4 }}>{s.ico}</Text>
@@ -268,8 +275,6 @@ export default function DriverFoundScreen({ navigation, route }) {
   );
 }
 
-const DEMO_RIDE   = { otp: '7842', estimatedFare: 280, distanceKm: 7.2 };
-const DEMO_DRIVER = { name: 'Fatima Malik', rating: '4.9', vehicle: 'Toyota Corolla', licensePlate: 'LHR-1234', vehicleColor: 'White' };
 
 const styles = StyleSheet.create({
   screen:          { flex: 1, backgroundColor: C.bg },

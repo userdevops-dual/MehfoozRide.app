@@ -6,47 +6,66 @@ import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import {useAuth} from '../../context/AuthContext';
 import {Badge, Card} from '../../components/UI';
-import {emitDriverLocation, onIncomingRide, offEvent} from '../../services/socket';
+import {emitDriverLocation, onIncomingRide, onDriverStatus} from '../../services/socket';
+import {requestLocationPermission} from '../../services/location';
 import {driverAPI} from '../../services/api';
 import {C, GRAD} from '../../utils/theme';
 
 export default function DriverHomeScreen({navigation}) {
   const {user, logout} = useAuth();
   const [isOnline,     setIsOnline]     = useState(false);
+  const [statusKnown,  setStatusKnown]  = useState(false);
+  const [gpsError,     setGpsError]     = useState(null);
   const [tab,          setTab]          = useState('home');
   const locationIntervalRef = useRef(null);
 
-  // Listen for incoming ride requests via socket.
-  // Only open a request while this screen is showing — never mid-ride.
+  // The server is the source of truth for online/offline
   useEffect(() => {
-    onIncomingRide(incoming => {
-      if (navigation.isFocused()) navigation.navigate('DriverAcceptRide', {rideData: incoming});
-    });
-    return () => offEvent('ride:incoming');
+    driverAPI.getStats()
+      .then(res => setIsOnline(!!res.stats?.isOnline))
+      .catch(() => {})
+      .finally(() => setStatusKnown(true));
+    // e.g. after a reconnect, or if the server took the driver offline
+    const offStatus = onDriverStatus(({isOnline: online}) => setIsOnline(!!online));
+    return () => offStatus && offStatus();
   }, []);
 
-  // Broadcast GPS every 5s while online (the ride screen sends ride-linked updates itself)
+  // Incoming ride requests (sent by the server to nearby drivers).
+  // Only open a request while this screen is showing — never mid-ride.
+  useEffect(() => {
+    const off = onIncomingRide(incoming => {
+      if (incoming?.updated) return;          // the request screen handles updates
+      if (navigation.isFocused()) navigation.navigate('DriverAcceptRide', {rideData: incoming});
+    });
+    return () => off && off();
+  }, []);
+
+  // Send GPS now and every 5 s while online — matching only uses drivers with a recent position
   useEffect(() => {
     if (!isOnline) return;
-    locationIntervalRef.current = setInterval(() => {
-      Geolocation.getCurrentPosition(
-        pos => emitDriverLocation([pos.coords.longitude, pos.coords.latitude], null),
-        () => {},
-        {enableHighAccuracy: true, timeout: 5000}
-      );
-    }, 5000);
+    const send = () => Geolocation.getCurrentPosition(
+      pos => { setGpsError(null); emitDriverLocation([pos.coords.longitude, pos.coords.latitude]); },
+      () => setGpsError('GPS unavailable — you will not get ride requests until your location is found.'),
+      {enableHighAccuracy: true, timeout: 5000, maximumAge: 10000}
+    );
+    send();
+    locationIntervalRef.current = setInterval(send, 5000);
     return () => clearInterval(locationIntervalRef.current);
   }, [isOnline]);
 
   const toggleOnline = async () => {
     const next = !isOnline;
+    if (next) {
+      const perm = await requestLocationPermission();
+      if (perm.error) { Alert.alert('Location Needed', perm.error.message); return; }
+    }
     try {
       const res = await driverAPI.setOnline(next);
-      setIsOnline(res.isOnline);
+      setIsOnline(res.isOnline);    // only what the server confirmed
       Alert.alert(res.isOnline ? '🟢 You are Online' : '🔴 You are Offline',
-        res.isOnline ? 'You will now receive ride requests.' : 'You will not receive ride requests.');
+        res.isOnline ? 'Nearby ride requests will appear here.' : 'You will not receive ride requests.');
     } catch (err) {
-      Alert.alert('Could Not Update Status', err.response?.data?.message || 'Server error. Please try again.');
+      Alert.alert('Could Not Update Status', err.response?.data?.message || 'Server error. Your status was not changed.');
     }
   };
 
@@ -119,7 +138,7 @@ export default function DriverHomeScreen({navigation}) {
           <View style={{flex:1}}>
             <Text style={styles.onlineTitle}>{isOnline ? '🟢 You are Online' : '🔴 You are Offline'}</Text>
             <Text style={styles.onlineSub}>
-              {isOnline ? 'Receiving ride requests · GPS broadcasting every 5s' : 'Tap to go online and start earning'}
+              {!statusKnown ? 'Checking status…' : isOnline ? (gpsError || 'Receiving nearby ride requests · sharing your location') : 'Tap to go online and start earning'}
             </Text>
           </View>
           <View style={[styles.toggle, {backgroundColor: isOnline ? C.success : C.border}]}>
