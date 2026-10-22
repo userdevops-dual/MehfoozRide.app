@@ -51,8 +51,9 @@ export const emitSOS = (rideId, coordinates) => {
 };
 
 // rideIds: the driver's active ride(s) — several when pooled (empty when idle)
-export const emitDriverLocation = (coordinates, rideIds = []) => {
-  socket?.emit('driver:location', { coordinates, rideIds: [].concat(rideIds || []).filter(Boolean) });
+// accuracy (metres) lets the server ignore poor GPS fixes when checking the route
+export const emitDriverLocation = (coordinates, rideIds = [], accuracy) => {
+  socket?.emit('driver:location', { coordinates, rideIds: [].concat(rideIds || []).filter(Boolean), accuracy });
 };
 
 export const emitDriverOnline = (isOnline) => {

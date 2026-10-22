@@ -69,9 +69,11 @@ async function seed() {
         isVerified: true, cnicVerified: true,
         cnic: '35201-7654321-4',
         isOnline: false,
-        averageRating: (4.5 + Math.random() * 0.5).toFixed(1),
+        // no ratings yet — the rating comes only from real passenger reviews
         driverDetails: {
           cnicNumber: '35201-7654321-4',
+          verificationSource: 'demo_seed',   // shown as demo data in the app
+          verifiedAt: new Date(),
           licenseNumber: `DL-${Math.floor(10000 + Math.random() * 90000)}`,
           vehicleMake: make || 'Toyota',
           vehicleModel: model || 'Corolla',
@@ -79,7 +81,7 @@ async function seed() {
           vehicleColor: color || 'White',
           licensePlate: d.licensePlate,
           backgroundCheck: 'passed',
-          backgroundNotes: 'Verified by admin during seeding',
+          backgroundNotes: 'DEMO account created by seedDemoAccounts.js — not a real background check',
         },
       });
     }

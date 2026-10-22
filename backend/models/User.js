@@ -52,6 +52,9 @@ const UserSchema = new mongoose.Schema(
       backgroundCheck:   { type: String, enum: ["pending", "passed", "failed"], default: "pending" },
       backgroundNotes:   { type: String, default: "" },
       criminalDeclaration: { type: Boolean, default: false },
+      // Who verified this driver: "admin" (real approval) or "demo_seed" (seedDemoAccounts.js)
+      verificationSource: { type: String, enum: ["none", "admin", "demo_seed"], default: "none" },
+      verifiedAt:         { type: Date },
     },
 
     // ── OTP failure tracking (fake ride detection) ───────────────────────

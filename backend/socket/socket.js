@@ -9,7 +9,7 @@
 const jwt  = require('jsonwebtoken');
 const User = require('../models/User');
 const Ride = require('../models/Ride');
-const { isDeviated } = require('../utils/routeDeviation');
+const routeMonitor = require('../services/routeMonitor');
 
 // ── Guardian Notification Helper ─────────────────────────────────────────
 // In production: call Twilio SMS / WhatsApp API here
@@ -86,7 +86,7 @@ const initSocket = (io) => {
     // Updates the driver's position (used for matching nearby drivers) and,
     // for each of her active rides (several when pooled), forwards the
     // position to the passenger, records the track and checks the route.
-    socket.on('driver:location', async ({ coordinates, rideId, rideIds } = {}) => {
+    socket.on('driver:location', async ({ coordinates, rideId, rideIds, accuracy } = {}) => {
       try {
         if (role !== 'driver' || !isValidCoordinates(coordinates)) return;
 
@@ -99,41 +99,80 @@ const initSocket = (io) => {
         for (const id of ids) {
           const ride = await Ride.findById(id)
             .populate('passenger', 'name guardianContacts')
-            .select('passenger driver pickupLocation dropoffLocation status routeDeviated');
+            .select('passenger driver pickupLocation dropoffLocation status routeDeviated routeDeviationActive preferredRoute estimatedDurationMinutes');
 
           if (!ride || !sameId(ride.driver, userId)) continue;
           if (!['accepted', 'arrived', 'in_progress'].includes(ride.status)) continue;
 
           const passengerRoom = ride.passenger._id.toString();
-          io.to(passengerRoom).emit('driver:location:update', { rideId: ride._id, coordinates, timestamp: new Date() });
+          const now = new Date();
 
-          if (ride.status !== 'in_progress') continue;
-
-          // ── Route Deviation Monitoring + Guardian Alert ────────────────
-          const deviated = isDeviated(coordinates, ride.pickupLocation.coordinates, ride.dropoffLocation.coordinates, 0.5);
-          if (deviated) {
-            io.to(passengerRoom).emit('ride:route-deviation', {
-              message: '⚠️ Driver has deviated from the planned route! Tap SOS if you feel unsafe.',
-              coordinates,
+          // Before pickup: how far the driver is from the passenger
+          if (ride.status !== 'in_progress') {
+            const km = routeMonitor.distM(coordinates, ride.pickupLocation.coordinates) / 1000;
+            io.to(passengerRoom).emit('driver:location:update', {
+              rideId: ride._id, coordinates, timestamp: now, status: ride.status,
+              toPickup: { distanceKm: Math.round(km * 10) / 10, etaMin: Math.max(1, Math.round(km * 1.3 * 3)) },
             });
+            continue;
+          }
+
+          // ── On trip: progress + unusual-route detection against the chosen route ──
+          const { progress, event } = routeMonitor.check(ride, coordinates, Number(accuracy) || undefined);
+          const update = {
+            $push: { routeCoordinates: { coordinates, timestamp: now } },   // recorded track — used for the final fare
+            $set:  { lastProgress: { ...progress, at: now } },
+          };
+          let active = ride.routeDeviationActive;
+
+          if (event === 'deviated') {
+            active = true;
+            update.$set.routeDeviated = true;
+            update.$set.routeDeviationActive = true;
+            update.$push.routeDeviations = { startedAt: now, startLocation: coordinates, maxOffRouteM: progress.offRouteM, thresholdM: progress.thresholdM };
+          } else if (event === 'back_on_route') {
+            active = false;
+            update.$set.routeDeviationActive = false;
+            update.$set['routeDeviations.$[open].endedAt'] = now;
+          }
+          await Ride.updateOne({ _id: ride._id }, update,
+            event === 'back_on_route' ? { arrayFilters: [{ 'open.endedAt': { $exists: false } }] } : {});
+          if (active && event !== 'deviated') {
+            // keep the worst distance of the current episode
+            await Ride.updateOne({ _id: ride._id },
+              { $max: { 'routeDeviations.$[open].maxOffRouteM': progress.offRouteM } },
+              { arrayFilters: [{ 'open.endedAt': { $exists: false } }] });
+          }
+
+          io.to(passengerRoom).emit('driver:location:update', {
+            rideId: ride._id, coordinates, timestamp: now, status: ride.status,
+            progress, routeDeviationActive: active,
+          });
+
+          if (event === 'deviated') {
+            const alert = {
+              rideId: ride._id, status: 'deviated', coordinates, offRouteM: progress.offRouteM,
+              message: `⚠️ Unusual route detected — the driver is about ${progress.offRouteM} m off your chosen route. Tap SOS if you feel unsafe.`,
+            };
+            io.to(passengerRoom).emit('ride:route-deviation', alert);
+            io.to('admins').emit('admin:route-deviation', { ...alert, passengerName: ride.passenger.name });
+            // Guardians are told once per trip, on the first deviation
             if (!ride.routeDeviated) {
-              await Ride.findByIdAndUpdate(ride._id, { routeDeviated: true });
               const notified = notifyGuardians(ride.passenger.guardianContacts, 'route_deviation', { passengerName: ride.passenger.name, coordinates });
               if (notified.length > 0) {
                 io.to(passengerRoom).emit('guardian:notified', {
                   event: 'route_deviation',
-                  message: `⚠️ Your guardian contacts (${notified.length}) have been alerted about the route change.`,
+                  message: `Your guardian contacts (${notified.length}) were alerted about the route change (demo: logged on the server, no SMS sent).`,
                 });
               }
             }
+          } else if (event === 'back_on_route') {
+            io.to(passengerRoom).emit('ride:route-deviation', {
+              rideId: ride._id, status: 'back_on_route', coordinates,
+              message: '✅ The driver is back on your chosen route.',
+            });
           }
-
-          // Recorded track — used for the final fare
-          await Ride.findByIdAndUpdate(ride._id, {
-            $push: { routeCoordinates: { coordinates, timestamp: new Date() } },
-          });
-        }
-      } catch (error) {
+        }      } catch (error) {
         console.error('Location update error:', error.message);
       }
     });

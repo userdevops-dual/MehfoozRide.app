@@ -37,6 +37,9 @@ export default function DriverFoundScreen({ navigation, route }) {
 
   // Real values only — '—' where the driver has not provided something
   const driverName    = driver?.name || 'Your driver';
+  // Verification comes from the server (services/verification.js) — never assumed
+  const vInfo  = driver?.verification;
+  const vLabel = driver?.verified ? 'Verified Female Driver' : 'Verification pending';
   const ratingValue   = driver?.rating ?? (driver?.totalRatings ? driver?.averageRating : null);
   const driverRating  = ratingValue ? Number(ratingValue).toFixed(1) : 'New driver';
   const driverVehicle = driver?.vehicle || [driver?.driverDetails?.vehicleMake, driver?.driverDetails?.vehicleModel].filter(Boolean).join(' ') || '—';
@@ -113,8 +116,8 @@ export default function DriverFoundScreen({ navigation, route }) {
               <View style={styles.driverPhotoAvatar}><Text style={{ fontSize: 48 }}>👩</Text></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.verifyDriverName}>{driverName}</Text>
-                <Text style={styles.verifyDriverSub}>⭐ {driverRating} · Verified Female Driver</Text>
-                <Text style={styles.verifyDriverSub}>🛡️ Background checked</Text>
+                <Text style={styles.verifyDriverSub}>⭐ {driverRating} · {vLabel}</Text>
+                {vInfo?.checks?.backgroundCheck && <Text style={styles.verifyDriverSub}>🛡️ Background checked{vInfo.isDemo ? ' (demo data)' : ''}</Text>}
               </View>
             </View>
 
@@ -187,7 +190,7 @@ export default function DriverFoundScreen({ navigation, route }) {
           <View style={styles.driverAvatar}><Text style={{ fontSize: 32 }}>👩</Text></View>
           <View style={{ flex: 1 }}>
             <Text style={styles.driverName}>{driverName}</Text>
-            <Text style={styles.driverRating}>⭐ {driverRating} · Verified Driver</Text>
+            <Text style={styles.driverRating}>⭐ {driverRating} · {vLabel}</Text>
             <Text style={styles.driverCar}>{driverVehicle} · <Text style={{ fontWeight: '800', color: C.rose }}>{driverPlate}</Text> · {driverColor}</Text>
           </View>
           {!!driver?.phone && (
@@ -200,6 +203,7 @@ export default function DriverFoundScreen({ navigation, route }) {
           {driver?.verified
             ? <Badge text="✅ Verified Female Driver" color={C.success} bg={C.successBg} />
             : <Badge text="⏳ Verification pending" color="#B07030" bg={C.goldLight} />}
+          {vInfo?.isDemo && <Badge text="🧪 Demo account" color={C.muted} bg={C.border} />}
           {driver?.totalRides > 0 && <Badge text={`🚗 ${driver.totalRides} rides`} color={C.rose} bg={C.rosePale} />}
           {pooled && <Badge text={`👯‍♀️ Pooled · ${ride.poolPassengers} passengers`} color={C.plum} bg="#F5E4F5" />}
           <Badge text="♀ Female Driver"        color={C.plum}    bg="#F5E4F5"     />

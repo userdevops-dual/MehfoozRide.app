@@ -115,7 +115,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
       pos => {
         const c = { latitude: pos.coords.latitude, longitude: pos.coords.longitude };
         setMyLoc(c);
-        emitDriverLocation([c.longitude, c.latitude], activeIds);
+        emitDriverLocation([c.longitude, c.latitude], activeIds, pos.coords.accuracy);
       },
       () => {},
       { enableHighAccuracy: true, timeout: 5000, maximumAge: 10000 }

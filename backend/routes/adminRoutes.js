@@ -62,6 +62,8 @@ router.put('/drivers/:id/approve', async (req, res) => {
     driver.driverDetails.backgroundCheck  = 'passed';
     driver.driverDetails.backgroundNotes  = backgroundNotes || 'Verified by admin';
     driver.driverDetails.criminalDeclaration = criminalDeclaration !== false;
+    driver.driverDetails.verificationSource  = 'admin';
+    driver.driverDetails.verifiedAt          = new Date();
 
     await driver.save();
     res.json({

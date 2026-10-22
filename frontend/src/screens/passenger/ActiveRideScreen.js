@@ -36,7 +36,13 @@ export default function ActiveRideScreen({ navigation, route }) {
   const [distanceTravelled, setDistanceTravelled]  = useState(0);
   const [showSafeDropMenu,  setShowSafeDropMenu]   = useState(false);
   const [guardianBanner,    setGuardianBanner]     = useState(null);
-  const [deviationAlert,    setDeviationAlert]     = useState(false);
+  // Route monitoring — the server compares the driver's GPS with the route chosen at booking
+  const [offRoute,          setOffRoute]           = useState(null);   // { offRouteM } while off-route
+  const [progress,          setProgress]           = useState(null);   // { remainingKm, etaMin, progressPct }
+  const [toPickup,          setToPickup]           = useState(null);   // { distanceKm, etaMin } before pickup
+  const [track,             setTrack]              = useState([]);     // driven path [[lat, lng], ...]
+  const [plannedLine,       setPlannedLine]        = useState(
+    (ride?.preferredRoute?.coordinates || []).map(([lng, lat]) => [lat, lng]));
 
   const { user } = useAuth();
   const startTime = useRef(null);
@@ -72,6 +78,11 @@ export default function ActiveRideScreen({ navigation, route }) {
     if (!ride?._id) return;
     rideAPI.getById(ride._id).then(res => {
       const status = res.ride?.status;
+      const r = res.ride || {};
+      if (r.plannedRoute?.length > 1) setPlannedLine(r.plannedRoute.map(([lng, lat]) => [lat, lng]));
+      if (r.routeCoordinates?.length) setTrack(r.routeCoordinates.map(p => [p.coordinates[1], p.coordinates[0]]));
+      if (r.routeDeviationActive) setOffRoute({ offRouteM: r.lastProgress?.offRouteM });
+      if (r.lastProgress?.remainingKm != null) setProgress(r.lastProgress);
       if (status === 'in_progress' && !startTime.current) {
         startTime.current = res.ride.startedAt ? new Date(res.ride.startedAt).getTime() : Date.now();
         setRideTime(Math.max(0, Math.round((Date.now() - startTime.current) / 1000)));
@@ -90,20 +101,31 @@ export default function ActiveRideScreen({ navigation, route }) {
   // ── Socket listeners ──────────────────────────────────────────────────────
   useEffect(() => {
     onDriverLocation(data => {
-      if (data?.coordinates)
-        setDriverLoc({ latitude: data.coordinates[1], longitude: data.coordinates[0] });
+      if (data?.rideId && String(data.rideId) !== String(ride?._id)) return;   // pooled: other passengers' updates
+      if (!data?.coordinates) return;
+      const [lng, lat] = data.coordinates;
+      setDriverLoc({ latitude: lat, longitude: lng });
+      if (data.toPickup) setToPickup(data.toPickup);
+      if (data.progress) {
+        setProgress(data.progress);
+        setTrack(t => [...t.slice(-500), [lat, lng]]);
+        setOffRoute(data.routeDeviationActive ? { offRouteM: data.progress.offRouteM } : null);
+      }
     });
 
     onRouteDeviation(data => {
-      setDeviationAlert(true);
-      Alert.alert(
-        '⚠️ Route Deviation Detected',
-        `${data.message}\n\nYour guardian contacts have been automatically notified.`,
-        [
-          { text: 'Dismiss', onPress: () => setDeviationAlert(false) },
-          { text: '🆘 SOS', style: 'destructive', onPress: handleSOS },
-        ]
-      );
+      if (data?.rideId && String(data.rideId) !== String(ride?._id)) return;
+      if (data.status === 'back_on_route') {
+        setOffRoute(null);
+        setGuardianBanner(data.message);
+        setTimeout(() => setGuardianBanner(null), 5000);
+        return;
+      }
+      setOffRoute({ offRouteM: data.offRouteM });
+      Alert.alert('⚠️ Unusual Route Detected', data.message, [
+        { text: 'OK' },
+        { text: '🆘 SOS', style: 'destructive', onPress: handleSOS },
+      ]);
     });
 
     onGuardianNotified(data => {
@@ -200,10 +222,11 @@ export default function ActiveRideScreen({ navigation, route }) {
   const mapCenter  = myLocation || { latitude: 31.5204, longitude: 74.3587 };
   const [dropLng, dropLat] = ride?.dropoffLocation?.coordinates || [];
   // Route the passenger chose when booking ([lng, lat] on the server → [lat, lng] for the map)
-  const plannedRoute = (ride?.preferredRoute?.coordinates || []).map(([lng, lat]) => [lat, lng]);
-  const mapRoutes = plannedRoute.length > 1
-    ? [{ id: 'planned', coordinates: plannedRoute, color: C.rose, weight: 5, opacity: 0.8, dashed: ride?.preferredRoute?.source === 'straight_line' }]
-    : [];
+  // Chosen route (pink) under the path actually driven (blue, red while off-route)
+  const mapRoutes = [
+    ...(plannedLine.length > 1 ? [{ id: 'planned', coordinates: plannedLine, color: C.rose, weight: 6, opacity: 0.55, dashed: ride?.preferredRoute?.source === 'straight_line' }] : []),
+    ...(track.length > 1 ? [{ id: 'actual', coordinates: track, color: offRoute ? '#E74C3C' : '#2D7FF9', weight: 4, opacity: 0.9 }] : []),
+  ];
   const mapMarkers = [
     ...(myLocation ? [{ id: 'me', ...myLocation, label: 'You', color: '#2D7FF9' }] : []),
     ...(dropLat != null ? [{ id: 'dropoff', latitude: dropLat, longitude: dropLng, label: 'Destination', emoji: '🏁' }] : []),
@@ -227,7 +250,7 @@ export default function ActiveRideScreen({ navigation, route }) {
         markers={mapMarkers}
         routes={mapRoutes}
         fitToContent={mapMarkers.length > 1 || mapRoutes.length > 0}
-        fitKey={`${mapRoutes.length}|${!!driverLoc}`}
+        fitKey={`${plannedLine.length}|${!!driverLoc}`}
       />
 
       {/* ── FIXED OTP MODAL ─────────────────────────────────────────────────
@@ -318,13 +341,13 @@ export default function ActiveRideScreen({ navigation, route }) {
         </View>
       )}
 
-      {/* Route Deviation Banner */}
-      {deviationAlert && (
-        <View style={styles.deviationBanner}>
+      {/* Route monitoring status */}
+      {offRoute && (
+        <TouchableOpacity style={styles.deviationBanner} onPress={handleSOS}>
           <Text style={{ color: '#fff', fontWeight: '700', fontSize: 12 }}>
-            ⚠️ Route deviation detected! Guardian contacts notified.
+            ⚠️ Unusual route — driver is {offRoute.offRouteM != null ? `about ${offRoute.offRouteM} m ` : ''}off your chosen route · tap for SOS
           </Text>
-        </View>
+        </TouchableOpacity>
       )}
 
       {/* Top Info Bar */}
@@ -358,6 +381,24 @@ export default function ActiveRideScreen({ navigation, route }) {
           <Text style={styles.fareText}>🧮 Live Fare</Text>
         </View>
       )}
+
+      {/* Trip progress (from the server, measured along your chosen route) */}
+      <View style={styles.progressBar}>
+        {otpVerified ? (
+          progress ? (
+            <>
+              <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, progress.progressPct || 0)}%` }]} /></View>
+              <Text style={styles.progressText}>
+                {progress.remainingKm} km to go · arriving in ~{progress.etaMin} min · {offRoute ? '⚠️ off route' : '✅ on your route'}
+              </Text>
+            </>
+          ) : <Text style={styles.progressText}>Waiting for the driver's GPS…</Text>
+        ) : (
+          <Text style={styles.progressText}>
+            {toPickup ? `🚗 Driver is ~${toPickup.distanceKm} km away · ~${toPickup.etaMin} min` : "Waiting for the driver's location…"}
+          </Text>
+        )}
+      </View>
 
       {/* Route Bar */}
       <View style={styles.routeBar}>
@@ -429,7 +470,11 @@ const styles = StyleSheet.create({
   endBtnText:          { color: '#fff', fontWeight: '800', fontSize: 15 },
   guardianBanner:      { position: 'absolute', top: 110, left: 14, right: 14, backgroundColor: '#27AE60', borderRadius: 14, padding: 12, zIndex: 10 },
   guardianBannerText:  { color: '#fff', fontSize: 12, fontWeight: '600', textAlign: 'center' },
-  deviationBanner:     { position: 'absolute', top: 110, left: 14, right: 14, backgroundColor: '#E74C3C', borderRadius: 14, padding: 12, zIndex: 10 },
+  progressBar:   { backgroundColor: '#fff', paddingHorizontal: 14, paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: C.border },
+  progressTrack: { height: 6, borderRadius: 3, backgroundColor: C.border, overflow: 'hidden', marginBottom: 5 },
+  progressFill:  { height: 6, borderRadius: 3, backgroundColor: C.success },
+  progressText:  { fontSize: 11, color: C.text, fontWeight: '600' },
+  deviationBanner:   { position: 'absolute', top: 110, left: 14, right: 14, backgroundColor: '#E74C3C', borderRadius: 14, padding: 12, zIndex: 10 },
   // ── OTP Modal (show-only — no entry field) ────────────────────────────────
   otpOverlay:          { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' },
   otpCard:             { backgroundColor: '#fff', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 24, alignItems: 'center' },

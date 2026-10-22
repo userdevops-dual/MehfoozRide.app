@@ -96,7 +96,21 @@ const RideSchema = new mongoose.Schema(
     routeCoordinates: [{ coordinates: [Number], timestamp: Date }],
 
     sosActivated:  { type: Boolean, default: false },
-    routeDeviated: { type: Boolean, default: false },
+    routeDeviated: { type: Boolean, default: false },        // deviated at any point in the trip
+    routeDeviationActive: { type: Boolean, default: false }, // off-route right now
+    // Each episode of leaving the chosen route (services/routeMonitor.js)
+    routeDeviations: [
+      {
+        startedAt:     { type: Date },
+        endedAt:       { type: Date },
+        startLocation: { type: [Number] },   // [lng, lat]
+        maxOffRouteM:  { type: Number, default: 0 },
+        thresholdM:    { type: Number },
+      },
+    ],
+    lastProgress: {
+      remainingKm: Number, progressPct: Number, etaMin: Number, offRouteM: Number, at: Date,
+    },
 
     // ── Guardian notifications log ────────────────────────────────────────
     guardianNotifications: [

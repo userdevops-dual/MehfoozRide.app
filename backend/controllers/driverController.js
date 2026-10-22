@@ -1,3 +1,4 @@
+const { driverVerification } = require('../services/verification');
 // mehfooz-backend/controllers/driverController.js
 // Handles: Driver document upload, verification status, online toggle
 
@@ -124,7 +125,7 @@ exports.getDriverStats = async (req, res) => {
     const todayRides = completedRides.filter(r => new Date(r.completedAt) >= today);
     const todayEarnings = todayRides.reduce((sum, r) => sum + (r.actualFare || 0), 0);
 
-    const driver = await User.findById(req.user.id).select('averageRating totalRatings isOnline');
+    const driver = await User.findById(req.user.id).select('averageRating totalRatings isOnline isVerified cnicVerified driverDetails');
 
     res.status(200).json({
       success: true,
@@ -136,6 +137,7 @@ exports.getDriverStats = async (req, res) => {
         averageRating:    driver.averageRating,
         totalRatings:     driver.totalRatings,
         isOnline:         driver.isOnline,
+        verification:     driverVerification(driver),
       },
     });
 

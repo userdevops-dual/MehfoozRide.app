@@ -131,6 +131,13 @@ Admin panel: driver approvals, background checks, SOS incidents, fake rides, liv
 - **Pooling** — passengers who tick *Share ride* are grouped when pickups are within 1.5 km, drop-offs within 2.5 km and directions within 35°, up to 3 passengers. Each pays a share of (longest trip × 1.15 per extra passenger), in proportion to her solo fare; if nobody joins she pays the normal fare. The driver accepts the whole pool and handles each passenger (arrive → gender check → OTP → complete) separately.
 - **Mood** — Talkative / Quiet / Introvert, shown to the driver on the request.
 
+### Verification, tracking and route monitoring (Phase 4)
+
+- **Verified Female Driver** — computed by `backend/services/verification.js` from real checks: female-eligible CNIC, documents uploaded, vehicle on file, background check passed, admin approval. Seeded demo drivers are marked `verificationSource: "demo_seed"` and the app labels them **🧪 Demo account**. Demo drivers start with no rating.
+- **Ride OTP** — per-ride 4-digit code; wrong code → ride stays at pickup (3 failures cancel and flag it). Ride details include a `lifecycle` (REQUESTED → DRIVER_ASSIGNED → DRIVER_AT_PICKUP → OTP_VERIFIED → RIDE_IN_PROGRESS → RIDE_COMPLETED).
+- **Live tracking** — before pickup the passenger sees the driver's distance/ETA; on the trip, remaining km, ETA and % progress along her chosen route, plus the driven path on the map.
+- **Unusual-route detection** — the driver's GPS is compared with the passenger's chosen road route (`appConfig.routeMonitor`): more than 250 m away (900 m if only a straight line is known) for 3 readings in a row → "Unusual route detected"; fixes with accuracy worse than 80 m are ignored. Each deviation episode (start, end, worst distance) is saved on the ride, and the passenger is told when the driver is back on route. This is monitoring — no map provider can lock a driver to a road.
+
 ---
 
 ## 7. What is simulated (say so in the presentation)

@@ -13,6 +13,8 @@ const config   = require("../config/appConfig");
 const { haversine } = require("../utils/routeDeviation");
 const geo      = require("../services/geo");
 const matching = require("../services/matching");
+const routeMonitor = require("../services/routeMonitor");
+const { driverVerification } = require("../services/verification");
 const realtime = require("../services/realtime");
 const { FARE, soloFare, poolEstimateFor, billableDistance, trackDistanceKm, validRideType } = require("../services/fare");
 const { fromLngLat, inServiceArea } = require("../utils/geoValidation");
@@ -272,13 +274,16 @@ exports.acceptRide = async (req, res) => {
       .sort({ createdAt: 1 });
     if (!rides.length) return unavailable();
 
+    const verification = driverVerification(driver);
     const driverInfo = {
       _id:          driver._id,
       name:         driver.name,
       phone:        driver.phone,
       rating:       driver.totalRatings ? driver.averageRating : null,
       totalRides:   driver.totalRides,
-      verified:     driver.isVerified === true && driver.driverDetails?.backgroundCheck === "passed",
+      verified:     verification.verified,
+      verification,                       // which checks passed, and whether this is demo data
+      photo:        driver.profilePhoto || null,
       vehicle:      `${driver.driverDetails?.vehicleMake || ""} ${driver.driverDetails?.vehicleModel || ""}`.trim(),
       vehicleColor: driver.driverDetails?.vehicleColor,
       licensePlate: driver.driverDetails?.licensePlate,
@@ -503,6 +508,14 @@ exports.completeRide = async (req, res) => {
     );
     if (!done) return res.status(400).json({ success: false, message: "Ride is not in progress" });
 
+    // Close a deviation episode still open at drop-off
+    routeMonitor.forget(done._id);
+    if (done.routeDeviationActive) {
+      await Ride.updateOne({ _id: done._id },
+        { $set: { routeDeviationActive: false, "routeDeviations.$[open].endedAt": new Date() } },
+        { arrayFilters: [{ "open.endedAt": { $exists: false } }] });
+    }
+
     await User.findByIdAndUpdate(req.user.id, { $inc: { totalRides: 1 } });
     await User.findByIdAndUpdate(ride.passenger, { $inc: { totalRides: 1 } });
 
@@ -653,10 +666,24 @@ exports.getMyRides = async (req, res) => {
 //  Participants and admins only. OTP and guardian contacts are included for
 //  the passenger herself (and admins) only — never for the driver.
 // ════════════════════════════════════════
+// Status lifecycle in the terms of the requirements, with the time each step happened
+const lifecycleOf = (ride) => {
+  const steps = [
+    ["REQUESTED",        ride.requestedAt],
+    ["DRIVER_ASSIGNED",  ride.acceptedAt],
+    ["DRIVER_AT_PICKUP", ride.arrivedAt],
+    ["OTP_VERIFIED",     ride.otpVerified ? ride.startedAt : null],
+    ["RIDE_IN_PROGRESS", ride.startedAt],
+    ["RIDE_COMPLETED",   ride.completedAt],
+  ].map(([step, at]) => ({ step, at: at || null, done: !!at }));
+  const current = ride.status === "cancelled" ? "CANCELLED" : ([...steps].reverse().find(s => s.done)?.step || "REQUESTED");
+  return { current, steps };
+};
+
 exports.getRideById = async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.id)
-      .populate("driver",    "name phone averageRating totalRatings driverDetails")
+      .populate("driver",    "name phone averageRating totalRatings totalRides profilePhoto isVerified cnicVerified driverDetails")
       .populate("passenger", "name phone guardianContacts")
       .populate("rating")
       .select("+otp");
@@ -668,6 +695,13 @@ exports.getRideById = async (req, res) => {
     const passengerSelf = isPassenger(ride, req.user);
     if (!passengerSelf) delete out.otp;
     if (!passengerSelf && req.user.role !== "admin" && out.passenger) delete out.passenger.guardianContacts;
+    if (ride.driver) out.driverVerification = driverVerification(ride.driver);
+    out.lifecycle = lifecycleOf(ride);
+    out.plannedRoute = routeMonitor.plannedLine(ride);   // [[lng, lat], ...] for the map
+    if (out.driver?.driverDetails && req.user.role !== "admin") {
+      // document keys, CNIC and licence numbers are for admins only
+      for (const k of ["cnicPhoto", "licensePhoto", "registrationPhoto", "cnicNumber", "licenseNumber", "backgroundNotes"]) delete out.driver.driverDetails[k];
+    }
     res.status(200).json({ success: true, ride: out });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

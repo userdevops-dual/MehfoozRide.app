@@ -34,6 +34,14 @@ module.exports = {
     sweepIntervalSeconds:    15,    // how often expired requests are cleaned up
   },
 
+  // Unusual-route detection (services/routeMonitor.js)
+  routeMonitor: {
+    deviationThresholdMeters:    250,  // further than this from the chosen road route counts as off-route
+    straightLineThresholdMeters: 900,  // when only a straight pickup→drop-off line is known
+    consecutiveReadings:         3,    // readings in a row (~15 s) before an alert / all-clear
+    maxGpsAccuracyMeters:        80,   // fixes less accurate than this are ignored for detection
+  },
+
   // Maps — free OpenStreetMap services by default. Point these at your own
   // Nominatim / OSRM servers (or another compatible provider) for production;
   // the public servers are for light development use only.

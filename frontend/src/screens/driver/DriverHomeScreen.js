@@ -16,13 +16,14 @@ export default function DriverHomeScreen({navigation}) {
   const [isOnline,     setIsOnline]     = useState(false);
   const [statusKnown,  setStatusKnown]  = useState(false);
   const [gpsError,     setGpsError]     = useState(null);
+  const [verification, setVerification] = useState(null);   // from the server
   const [tab,          setTab]          = useState('home');
   const locationIntervalRef = useRef(null);
 
   // The server is the source of truth for online/offline
   useEffect(() => {
     driverAPI.getStats()
-      .then(res => setIsOnline(!!res.stats?.isOnline))
+      .then(res => { setIsOnline(!!res.stats?.isOnline); setVerification(res.stats?.verification || null); })
       .catch(() => {})
       .finally(() => setStatusKnown(true));
     // e.g. after a reconnect, or if the server took the driver offline
@@ -131,6 +132,22 @@ export default function DriverHomeScreen({navigation}) {
           </View>
         )}
 
+        {/* Verification status — built from the checks the server has on record */}
+        {verification && (
+          <View style={styles.vCard}>
+            <Text style={[styles.vTitle, {color: verification.verified ? C.success : '#B07030'}]}>
+              {verification.verified ? '✅ ' : '⏳ '}{verification.label}{verification.isDemo ? '  ·  🧪 demo account' : ''}
+            </Text>
+            <View style={styles.vChecks}>
+              {[['cnic','CNIC'],['documents','Documents'],['vehicle','Vehicle'],['backgroundCheck','Background check'],['adminApproved','Admin approval']].map(([k, lbl]) => (
+                <Text key={k} style={[styles.vCheck, {color: verification.checks?.[k] ? C.success : C.muted}]}>
+                  {verification.checks?.[k] ? '✓' : '○'} {lbl}
+                </Text>
+              ))}
+            </View>
+          </View>
+        )}
+
         {/* Online Toggle */}
         <TouchableOpacity onPress={user?.isVerified ? toggleOnline : ()=>Alert.alert('Not Verified','Please upload documents first.')}
           style={[styles.onlineCard, {borderColor: isOnline ? C.success : C.border}]}>
@@ -190,6 +207,10 @@ const styles = StyleSheet.create({
   statLbl:      {color:'rgba(255,255,255,0.7)', fontSize:9, marginTop:2},
   verifyBanner: {backgroundColor:C.dangerBg, margin:14, borderRadius:14, padding:12, flexDirection:'row', alignItems:'center', gap:10, borderWidth:1, borderColor:`${C.danger}30`},
   verifyText:   {flex:1, fontSize:11, color:C.danger},
+  vCard:        {backgroundColor:'#fff', marginHorizontal:14, marginTop:14, borderRadius:16, padding:12, borderWidth:1, borderColor:C.border},
+  vTitle:       {fontSize:13, fontWeight:'800'},
+  vChecks:      {flexDirection:'row', flexWrap:'wrap', gap:10, marginTop:6},
+  vCheck:       {fontSize:11, fontWeight:'600'},
   onlineCard:   {backgroundColor:'#fff', margin:14, borderRadius:18, padding:16, flexDirection:'row', alignItems:'center', gap:14, borderWidth:2, shadowColor:'#000', shadowOffset:{width:0,height:2}, shadowOpacity:0.08, elevation:3},
   onlineDot:    {width:14, height:14, borderRadius:7},
   onlineTitle:  {fontSize:14, fontWeight:'700', color:C.text},
