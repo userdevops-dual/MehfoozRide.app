@@ -50,6 +50,8 @@ app.use((err, req, res, _next) => {
 const httpServer = http.createServer(app);
 const io = new Server(httpServer, { cors: { origin: '*', methods: ['GET', 'POST'] } });
 initSocket(io);
+require('./services/realtime').setIO(io);          // lets controllers notify users
+require('./services/matching').startSweeper();     // expires old requests, re-offers open ones
 
 const PORT = process.env.PORT || 5000;
 httpServer.listen(PORT, () => {

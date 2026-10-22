@@ -25,6 +25,15 @@ module.exports = {
 
   password: { minLength: 8 },
 
+  // Driver matching
+  matching: {
+    searchRadiusKm:          5,     // offer rides to drivers within this distance of the pickup
+    maxDriversNotified:      5,     // nearest N eligible drivers get the request
+    requestTimeoutSeconds:   120,   // unaccepted requests are cancelled after this
+    driverLocationMaxAgeSec: 180,   // drivers whose GPS is older than this are skipped
+    sweepIntervalSeconds:    15,    // how often expired requests are cleaned up
+  },
+
   // Maps — free OpenStreetMap services by default. Point these at your own
   // Nominatim / OSRM servers (or another compatible provider) for production;
   // the public servers are for light development use only.

@@ -78,6 +78,7 @@ const UserSchema = new mongoose.Schema(
       type: { type: String, enum: ["Point"], default: "Point" },
       coordinates: { type: [Number], default: [0, 0] },
     },
+    locationUpdatedAt: { type: Date },   // drivers with stale GPS are not offered rides
 
     isSuspended:   { type: Boolean, default: false },
     suspendReason: { type: String,  default: "" },

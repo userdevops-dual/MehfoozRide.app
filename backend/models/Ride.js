@@ -9,9 +9,21 @@ const RideSchema = new mongoose.Schema(
     passenger: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     driver:    { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
+    // isPooled = passenger consented to pooling; pool = the group she was matched into (if any)
     isPooled: { type: Boolean, default: false },
+    pool:     { type: mongoose.Schema.Types.ObjectId, ref: "RidePool", default: null },
+    soloFare: { type: Number, default: 0 },   // what this trip costs alone (pool share is compared to it)
     poolPassengers: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     maxPoolSize: { type: Number, default: 1 },
+
+    // Driver matching
+    requestExpiresAt: { type: Date },
+    offeredTo:  [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+    declinedBy: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+
+    // Final fare basis: "gps" (recorded track) or "planned" (route chosen at booking)
+    billedDistanceKm: { type: Number, default: 0 },
+    distanceSource:   { type: String, enum: ["gps", "planned", ""], default: "" },
 
     pickupLocation: {
       address: { type: String, required: true },
@@ -54,7 +66,8 @@ const RideSchema = new mongoose.Schema(
     },
     moodPreference: {
       type: String,
-      enum: ["quiet", "friendly", "talkative"],
+      // "friendly" kept only so rides booked before Phase 3 still load
+      enum: ["talkative", "quiet", "introvert", "friendly"],
       default: "quiet",
     },
 

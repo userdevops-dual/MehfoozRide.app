@@ -41,6 +41,10 @@ const isValidCoordinates = (c) =>
 
 const sameId = (a, b) => !!a && !!b && a.toString() === b.toString();
 
+// Drivers who lost their connection: userId → timer that sets them offline
+const OFFLINE_GRACE_SECONDS = 60;
+const pendingOffline = new Map();
+
 const initSocket = (io) => {
   // ── AUTHENTICATION ───────────────────────────────────────────────────────
   io.use(async (socket, next) => {
@@ -68,142 +72,75 @@ const initSocket = (io) => {
     if (role === 'admin') socket.join('admins');
     console.log(`🔌 Socket connected: ${socket.id} (${role} ${userId})`);
 
-    // ── DRIVER LOCATION — every 5s, with route deviation + guardian alert ──
-    socket.on('driver:location', async ({ coordinates, rideId } = {}) => {
+    // A driver who reconnects within the grace period stays online.
+    // Either way, tell her app the real status so the screen matches the server.
+    if (role === 'driver') {
+      clearTimeout(pendingOffline.get(userId));
+      pendingOffline.delete(userId);
+      User.findById(userId).select('isOnline').then(u => {
+        socket.emit('driver:status-updated', { isOnline: !!u?.isOnline, reason: 'reconnected' });
+      }).catch(() => {});
+    }
+
+    // ── DRIVER LOCATION — every 5s ─────────────────────────────────────────
+    // Updates the driver's position (used for matching nearby drivers) and,
+    // for each of her active rides (several when pooled), forwards the
+    // position to the passenger, records the track and checks the route.
+    socket.on('driver:location', async ({ coordinates, rideId, rideIds } = {}) => {
       try {
         if (role !== 'driver' || !isValidCoordinates(coordinates)) return;
 
         await User.findByIdAndUpdate(userId, {
           location: { type: 'Point', coordinates },
+          locationUpdatedAt: new Date(),
         });
 
-        if (!rideId) return;
+        const ids = [...new Set([...(Array.isArray(rideIds) ? rideIds : []), ...(rideId ? [rideId] : [])].map(String))].slice(0, 5);
+        for (const id of ids) {
+          const ride = await Ride.findById(id)
+            .populate('passenger', 'name guardianContacts')
+            .select('passenger driver pickupLocation dropoffLocation status routeDeviated');
 
-        const ride = await Ride.findById(rideId)
-          .populate('passenger', 'name guardianContacts')
-          .select('passenger driver pickupLocation dropoffLocation status routeDeviated');
+          if (!ride || !sameId(ride.driver, userId)) continue;
+          if (!['accepted', 'arrived', 'in_progress'].includes(ride.status)) continue;
 
-        if (!ride || !sameId(ride.driver, userId)) return;
-        if (!['accepted', 'arrived', 'in_progress'].includes(ride.status)) return;
+          const passengerRoom = ride.passenger._id.toString();
+          io.to(passengerRoom).emit('driver:location:update', { rideId: ride._id, coordinates, timestamp: new Date() });
 
-        const passengerRoom = ride.passenger._id.toString();
+          if (ride.status !== 'in_progress') continue;
 
-        // Send live location to passenger
-        io.to(passengerRoom).emit('driver:location:update', {
-          coordinates,
-          timestamp: new Date(),
-        });
-
-        if (ride.status !== 'in_progress') return;
-
-        // ── Route Deviation Monitoring + Guardian Alert ────────────────
-        const deviated = isDeviated(
-          coordinates,
-          ride.pickupLocation.coordinates,
-          ride.dropoffLocation.coordinates,
-          0.5
-        );
-
-        if (deviated) {
-          io.to(passengerRoom).emit('ride:route-deviation', {
-            message: '⚠️ Driver has deviated from the planned route! Tap SOS if you feel unsafe.',
-            coordinates,
-          });
-
-          if (!ride.routeDeviated) {
-            await Ride.findByIdAndUpdate(rideId, { routeDeviated: true });
-
-            const notified = notifyGuardians(
-              ride.passenger.guardianContacts,
-              'route_deviation',
-              { passengerName: ride.passenger.name, coordinates }
-            );
-
-            if (notified.length > 0) {
-              io.to(passengerRoom).emit('guardian:notified', {
-                event: 'route_deviation',
-                message: `⚠️ Your guardian contacts (${notified.length}) have been alerted about the route change.`,
-              });
+          // ── Route Deviation Monitoring + Guardian Alert ────────────────
+          const deviated = isDeviated(coordinates, ride.pickupLocation.coordinates, ride.dropoffLocation.coordinates, 0.5);
+          if (deviated) {
+            io.to(passengerRoom).emit('ride:route-deviation', {
+              message: '⚠️ Driver has deviated from the planned route! Tap SOS if you feel unsafe.',
+              coordinates,
+            });
+            if (!ride.routeDeviated) {
+              await Ride.findByIdAndUpdate(ride._id, { routeDeviated: true });
+              const notified = notifyGuardians(ride.passenger.guardianContacts, 'route_deviation', { passengerName: ride.passenger.name, coordinates });
+              if (notified.length > 0) {
+                io.to(passengerRoom).emit('guardian:notified', {
+                  event: 'route_deviation',
+                  message: `⚠️ Your guardian contacts (${notified.length}) have been alerted about the route change.`,
+                });
+              }
             }
           }
-        }
 
-        // Store route
-        await Ride.findByIdAndUpdate(rideId, {
-          $push: { routeCoordinates: { coordinates, timestamp: new Date() } },
-        });
+          // Recorded track — used for the final fare
+          await Ride.findByIdAndUpdate(ride._id, {
+            $push: { routeCoordinates: { coordinates, timestamp: new Date() } },
+          });
+        }
       } catch (error) {
         console.error('Location update error:', error.message);
       }
     });
 
-    // ── NEW RIDE REQUEST — notify online verified female drivers ────────────
-    socket.on('ride:new-request', async ({ rideId } = {}) => {
-      try {
-        const ride = await Ride.findById(rideId)
-          .populate('passenger', 'name averageRating guardianContacts');
-        if (!ride || !sameId(ride.passenger._id, userId) || ride.status !== 'requested') return;
-
-        notifyGuardians(ride.passenger.guardianContacts, 'ride_booked', {
-          passengerName: ride.passenger.name,
-        });
-
-        const drivers = await User.find({
-          role: 'driver', gender: 'female',
-          isVerified: true, isOnline: true, isSuspended: false,
-        }).select('_id');
-
-        drivers.forEach(driver => {
-          io.to(driver._id.toString()).emit('ride:incoming', {
-            rideId:          ride._id,
-            passengerName:   ride.passenger.name,
-            passengerRating: ride.passenger.averageRating,
-            pickupAddress:   ride.pickupLocation.address,
-            dropoffAddress:  ride.dropoffLocation.address,
-            estimatedFare:   ride.estimatedFare,
-            farePerPassenger: ride.farePerPassenger,
-            distanceKm:      ride.distanceKm,
-            moodPreference:  ride.moodPreference,
-            isPooled:        ride.isPooled,
-          });
-        });
-        console.log(`🚗 Ride ${rideId} broadcast to ${drivers.length} drivers`);
-      } catch (err) {
-        console.error('Ride request socket error:', err.message);
-      }
-    });
-
-    // ── DRIVER ACCEPTED (after REST accept succeeded) — notify passenger + guardian
-    socket.on('ride:accepted', async ({ rideId } = {}) => {
-      try {
-        const ride = await Ride.findById(rideId)
-          .populate('passenger', 'name guardianContacts')
-          .populate('driver', 'name phone averageRating driverDetails');
-        if (!ride || !sameId(ride.driver?._id, userId) || ride.status !== 'accepted') return;
-
-        const driver = ride.driver;
-        io.to(ride.passenger._id.toString()).emit('ride:driver-found', {
-          rideId,
-          driver: {
-            _id:          driver._id,
-            name:         driver.name,
-            phone:        driver.phone,
-            rating:       driver.averageRating,
-            vehicle:      `${driver.driverDetails?.vehicleMake || ''} ${driver.driverDetails?.vehicleModel || ''}`.trim(),
-            vehicleColor: driver.driverDetails?.vehicleColor,
-            licensePlate: driver.driverDetails?.licensePlate,
-          },
-        });
-
-        notifyGuardians(ride.passenger.guardianContacts, 'driver_assigned', {
-          passengerName: ride.passenger.name,
-          driverName:    driver.name,
-          licensePlate:  driver.driverDetails?.licensePlate || 'N/A',
-        });
-      } catch (err) {
-        console.error('Ride accepted socket error:', err.message);
-      }
-    });
+    // Ride requests are offered to drivers by the server when a ride is booked
+    // (services/matching.js), and passengers are told about an accepted ride by
+    // the accept endpoint — neither depends on a message from another app.
 
     // ── DRIVER ARRIVED ──────────────────────────────────────────────────────
     socket.on('ride:driver-arrived', async ({ rideId } = {}) => {
@@ -364,9 +301,20 @@ const initSocket = (io) => {
     });
 
     // ── DISCONNECT ─────────────────────────────────────────────────────────
+    // A short network drop must not silently take a driver offline: wait a
+    // grace period, and only go offline if she has not reconnected by then.
     socket.on('disconnect', async () => {
       if (role === 'driver') {
-        await User.findByIdAndUpdate(userId, { isOnline: false }).catch(() => {});
+        const stillConnected = (await io.in(userId).fetchSockets()).length > 0;
+        if (!stillConnected) {
+          clearTimeout(pendingOffline.get(userId));
+          pendingOffline.set(userId, setTimeout(async () => {
+            pendingOffline.delete(userId);
+            if ((await io.in(userId).fetchSockets()).length > 0) return;
+            await User.findByIdAndUpdate(userId, { isOnline: false }).catch(() => {});
+            console.log(`🔴 Driver ${userId} set offline after ${OFFLINE_GRACE_SECONDS}s without a connection`);
+          }, OFFLINE_GRACE_SECONDS * 1000));
+        }
       }
       console.log(`❌ Disconnected: ${userId}`);
     });

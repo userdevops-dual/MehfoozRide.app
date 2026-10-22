@@ -1,18 +1,26 @@
 // ─────────────────────────────────────────
 //  controllers/rideController.js
-//  Handles: Book, Accept, OTP (with fake-ride detection), Complete, Rate
+//  Handles: Estimate, Book (+pooling, driver matching), Accept/Decline,
+//  Arrive, OTP (with fake-ride detection), Complete, Cancel, Rate
+//  Fare rules live in config/fare.js; matching/pooling in services/matching.js
 // ─────────────────────────────────────────
 
-const Ride   = require("../models/Ride");
-const User   = require("../models/User");
-const Rating = require("../models/Rating");
+const Ride     = require("../models/Ride");
+const User     = require("../models/User");
+const Rating   = require("../models/Rating");
+const RidePool = require("../models/RidePool");
+const config   = require("../config/appConfig");
 const { haversine } = require("../utils/routeDeviation");
-const geo = require("../services/geo");
+const geo      = require("../services/geo");
+const matching = require("../services/matching");
+const realtime = require("../services/realtime");
+const { FARE, soloFare, poolEstimateFor, billableDistance, trackDistanceKm, validRideType } = require("../services/fare");
 const { fromLngLat, inServiceArea } = require("../utils/geoValidation");
 
 const ACTIVE_STATUSES = ["requested", "accepted", "arrived", "otp_verified", "in_progress"];
+const MOODS = ["talkative", "quiet", "introvert"];
 
-// ── Helper: Generate 4-digit OTP ─────────
+// ── Helper: Generate 4-digit OTP (new random code for every ride) ──
 const generateOTP = () => Math.floor(1000 + Math.random() * 9000).toString();
 
 // ── Helpers: ride ownership ──────────────
@@ -21,36 +29,10 @@ const isPassenger = (ride, user) => sameId(ride.passenger?._id || ride.passenger
 const isDriver    = (ride, user) => sameId(ride.driver?._id    || ride.driver,    user.id);
 const isParticipant = (ride, user) => isPassenger(ride, user) || isDriver(ride, user);
 
-// ── Dynamic Fare Calculator ───────────────
-// Fare = Base Fare + (Distance × Rate/km) + (Time × Rate/min) + ride type surcharge
-const RIDE_TYPE_SURCHARGE = { economy: 0, ac: 50, bike: -50 };
-const MINUTES_PER_KM_ESTIMATE = 3.5; // Lahore city traffic — same estimate as BookingScreen
-const ROAD_DISTANCE_FACTOR    = 1.3; // straight-line → approximate road distance
-
-const calculateFare = (distanceKm, durationMinutes = 0, isPooled = false, rideType = "economy") => {
-  const BASE_FARE    = 80;
-  const RATE_PER_KM  = 25;
-  const RATE_PER_MIN = 5;
-  const POOL_DISCOUNT = 100;
-
-  const distanceFare  = distanceKm * RATE_PER_KM;
-  const timeFare      = durationMinutes * RATE_PER_MIN;
-  let fare            = BASE_FARE + distanceFare + timeFare + (RIDE_TYPE_SURCHARGE[rideType] || 0);
-  const discount      = isPooled ? POOL_DISCOUNT : 0;
-  fare               -= discount;
-
-  const total = Math.max(fare, 50);
-  const farePerPassenger = isPooled ? Math.ceil(total / 2) : total; // split 50/50 for pooled
-
-  return {
-    baseFare:        BASE_FARE,
-    distanceFare:    Math.round(distanceFare),
-    timeFare:        Math.round(timeFare),
-    discount,
-    total:           Math.round(total),
-    farePerPassenger: Math.round(farePerPassenger),
-  };
-};
+// fareBreakdown stored on the ride
+const breakdown = (f, discount = 0) => ({
+  baseFare: f.baseFare, distanceFare: f.distanceFare, timeFare: f.timeFare, discount,
+});
 
 // ── Route planning (server-side — distance is never trusted from the client) ──
 // Real road routes from the routing service; if it is unreachable, a clearly
@@ -63,13 +45,13 @@ const planRoutes = async (pickup, dropoff) => {
     return { source: "osrm", routes };
   } catch (e) {
     const straightKm = haversine(pickup.lat, pickup.lng, dropoff.lat, dropoff.lng);
-    const distanceKm = Math.max(1, Math.round(straightKm * ROAD_DISTANCE_FACTOR * 10) / 10);
+    const distanceKm = Math.max(1, Math.round(straightKm * FARE.fallback.roadDistanceFactor * 10) / 10);
     return {
       source: "straight_line",
       warning: "Road routing is unavailable right now — distance and time are approximate.",
       routes: [{
         index: 0, distanceKm, summary: "Approximate (straight line)",
-        durationMin: Math.round(distanceKm * MINUTES_PER_KM_ESTIMATE),
+        durationMin: Math.round(distanceKm * FARE.fallback.minutesPerKm),
         coordinates: [[pickup.lat, pickup.lng], [dropoff.lat, dropoff.lng]],
       }],
     };
@@ -90,22 +72,29 @@ const readTripPoints = (body) => {
 
 // ════════════════════════════════════════
 //  @route  POST /api/rides/estimate
-//  Real routes (with alternatives) + server-calculated fare for each
+//  Real routes (with alternatives) + server-calculated fare for each.
+//  poolFare = what the passenger would pay if one similar passenger joins.
 // ════════════════════════════════════════
 exports.estimateRide = async (req, res) => {
   try {
     const { pickup, dropoff, error } = readTripPoints(req.body);
     if (error) return res.status(400).json({ success: false, message: error });
 
-    const type   = RIDE_TYPE_SURCHARGE[req.body.rideType] !== undefined ? req.body.rideType : "economy";
-    const pooled = req.body.isPooled === true;
-    const plan   = await planRoutes(pickup, dropoff);
+    const type = validRideType(req.body.rideType);
+    const plan = await planRoutes(pickup, dropoff);
 
     res.json({
       success: true,
       source:  plan.source,
       warning: plan.warning,
-      routes:  plan.routes.map(r => ({ ...r, fare: calculateFare(r.distanceKm, r.durationMin, pooled, type) })),
+      routes:  plan.routes.map(r => {
+        const f = soloFare(r.distanceKm, r.durationMin, type);
+        return {
+          ...r,
+          fare: { ...breakdown(f), surcharge: f.surcharge, total: f.total, farePerPassenger: f.total },
+          poolFare: poolEstimateFor(r.distanceKm, r.durationMin, type),
+        };
+      }),
     });
   } catch (error) {
     console.error("Estimate error:", error.message);
@@ -115,6 +104,8 @@ exports.estimateRide = async (req, res) => {
 
 // ════════════════════════════════════════
 //  @route  POST /api/rides
+//  Books, tries to pool (if the passenger consented) and offers the request
+//  to the nearest eligible drivers. The request expires automatically.
 // ════════════════════════════════════════
 exports.bookRide = async (req, res) => {
   try {
@@ -126,42 +117,37 @@ exports.bookRide = async (req, res) => {
       return res.status(400).json({ success: false, message: "Go offline in driver mode before booking a ride as a passenger." });
     }
 
-    const {
-      pickupAddress, pickupCoordinates,
-      dropoffAddress, dropoffCoordinates,
-      moodPreference, isPooled, rideType, routeIndex,
-    } = req.body;
+    const { pickupAddress, pickupCoordinates, dropoffAddress, dropoffCoordinates,
+            moodPreference, isPooled, rideType, routeIndex } = req.body;
 
     if (!pickupAddress || !dropoffAddress) {
       return res.status(400).json({ success: false, message: "Pickup and dropoff locations are required" });
     }
-    const { pickup, dropoff, error } = readTripPoints(req.body);
+    if (moodPreference !== undefined && !MOODS.includes(moodPreference)) {
+      return res.status(400).json({ success: false, message: "Mood must be talkative, quiet or introvert." });
+    }
+    const { error } = readTripPoints(req.body);
     if (error) return res.status(400).json({ success: false, message: error });
 
-    const activeRide = await Ride.findOne({
-      passenger: req.user.id,
-      status: { $in: ACTIVE_STATUSES },
-    });
+    // Old unaccepted requests are expired first, so they never block a new booking
+    await matching.expireRequests({ passenger: req.user._id });
+    const activeRide = await Ride.findOne({ passenger: req.user.id, status: { $in: ACTIVE_STATUSES } });
     if (activeRide) {
       return res.status(400).json({ success: false, message: "You already have an active ride", rideId: activeRide._id });
     }
 
     // Route chosen by the passenger — recalculated here, never taken from the client
+    const { pickup, dropoff } = readTripPoints(req.body);
     const plan  = await planRoutes(pickup, dropoff);
     const route = plan.routes[Number.isInteger(routeIndex) ? routeIndex : 0] || plan.routes[0];
-
-    const distanceKm = route.distanceKm;
-    const type       = RIDE_TYPE_SURCHARGE[rideType] !== undefined ? rideType : "economy";
-    const pooled     = isPooled === true;
-
-    const fareDetails = calculateFare(distanceKm, route.durationMin, pooled, type);
-    const otp = generateOTP();
+    const type  = validRideType(rideType);
+    const fare  = soloFare(route.distanceKm, route.durationMin, type);
 
     const ride = await Ride.create({
       passenger:       req.user.id,
       pickupLocation:  { address: pickupAddress,  coordinates: pickupCoordinates },
       dropoffLocation: { address: dropoffAddress, coordinates: dropoffCoordinates },
-      distanceKm,
+      distanceKm:      route.distanceKm,
       estimatedDurationMinutes: route.durationMin,
       preferredRoute: {
         source:      plan.source,
@@ -171,39 +157,52 @@ exports.bookRide = async (req, res) => {
         summary:     route.summary,
         coordinates: route.coordinates.map(([lat, lng]) => [lng, lat]),
       },
-      estimatedFare:   fareDetails.total,
-      fareBreakdown:   fareDetails,
-      farePerPassenger: fareDetails.farePerPassenger,
-      rideType:        type,
-      moodPreference:  moodPreference || "quiet",
-      isPooled:        pooled,
-      maxPoolSize:     pooled ? 3 : 1,
-      otp,
-      status: "requested",
+      estimatedFare:    fare.total,
+      soloFare:         fare.total,
+      fareBreakdown:    breakdown(fare),
+      farePerPassenger: fare.total,
+      rideType:         type,
+      moodPreference:   moodPreference || "quiet",
+      isPooled:         isPooled === true,
+      maxPoolSize:      isPooled === true ? FARE.pool.maxPassengers : 1,
+      otp:              generateOTP(),
+      status:           "requested",
+      requestExpiresAt: new Date(Date.now() + config.matching.requestTimeoutSeconds * 1000),
     });
 
-    const passenger = await User.findById(req.user.id).select("guardianContacts name");
+    // Pool with a compatible consenting passenger (if any), then offer to drivers
+    const pooled = await matching.tryPool(ride);
+    const lead   = await matching.leadRideOf(await Ride.findById(ride._id));
+    const driversNotified = await matching.offerToDrivers(lead._id);
+
+    const fresh = await Ride.findById(ride._id).select("+otp");
+    const passenger = await User.findById(req.user.id).select("guardianContacts");
     const activeGuardians = (passenger.guardianContacts || []).filter(c => c.isActive);
 
     res.status(201).json({
       success: true,
-      message: "Ride booked successfully! Finding your driver...",
+      message: "Ride booked! Finding your driver...",
       ride: {
-        _id:             ride._id,
-        otp,             // returned to the passenger only — hidden everywhere else
-        estimatedFare:   ride.estimatedFare,
-        fareBreakdown:   ride.fareBreakdown,
-        farePerPassenger: ride.farePerPassenger,
-        distanceKm:      ride.distanceKm,
-        estimatedDurationMinutes: ride.estimatedDurationMinutes,
-        preferredRoute:  ride.preferredRoute,
-        pickupLocation:  ride.pickupLocation,
-        dropoffLocation: ride.dropoffLocation,
-        status:          ride.status,
-        rideType:        ride.rideType,
-        moodPreference:  ride.moodPreference,
-        isPooled:        ride.isPooled,
+        _id:              fresh._id,
+        otp:              fresh.otp,   // returned to the passenger only — hidden everywhere else
+        estimatedFare:    fresh.estimatedFare,
+        soloFare:         fresh.soloFare,
+        fareBreakdown:    fresh.fareBreakdown,
+        farePerPassenger: fresh.farePerPassenger,
+        distanceKm:       fresh.distanceKm,
+        estimatedDurationMinutes: fresh.estimatedDurationMinutes,
+        preferredRoute:   fresh.preferredRoute,
+        pickupLocation:   fresh.pickupLocation,
+        dropoffLocation:  fresh.dropoffLocation,
+        status:           fresh.status,
+        rideType:         fresh.rideType,
+        moodPreference:   fresh.moodPreference,
+        isPooled:         fresh.isPooled,
+        pool:             fresh.pool,
+        requestExpiresAt: fresh.requestExpiresAt,
       },
+      pool: pooled ? { passengers: pooled.passengers, yourFare: fresh.farePerPassenger, soloFare: fresh.soloFare } : null,
+      driversNotified,
       guardianNotified: activeGuardians.length > 0,
       guardiansCount:   activeGuardians.length,
     });
@@ -216,7 +215,8 @@ exports.bookRide = async (req, res) => {
 
 // ════════════════════════════════════════
 //  @route  PUT /api/rides/:id/accept
-//  Only verified female drivers; atomic so two drivers can't both win
+//  Verified female drivers only; atomic so two drivers can't both win.
+//  Accepting a pooled request assigns every passenger in the pool.
 // ════════════════════════════════════════
 exports.acceptRide = async (req, res) => {
   try {
@@ -231,41 +231,117 @@ exports.acceptRide = async (req, res) => {
     if (driver.gender !== "female") {
       return res.status(403).json({ success: false, message: "Only female drivers can accept rides on Mehfooz Ride" });
     }
-
     const busy = await Ride.exists({ driver: req.user.id, status: { $in: ACTIVE_STATUSES } });
     if (busy) {
       return res.status(400).json({ success: false, message: "Finish your current ride before accepting another" });
     }
 
-    const ride = await Ride.findOneAndUpdate(
-      { _id: req.params.id, status: "requested", driver: null },
-      { driver: req.user.id, status: "accepted", acceptedAt: Date.now() },
-      { new: true }
-    );
-    if (!ride) {
-      return res.status(409).json({ success: false, message: "This ride is no longer available" });
+    const requested = await Ride.findById(req.params.id);
+    const unavailable = () => res.status(409).json({ success: false, message: "This ride is no longer available" });
+    if (!requested || requested.status !== "requested" || requested.driver) return unavailable();
+    if (requested.requestExpiresAt && requested.requestExpiresAt < new Date()) return unavailable();
+    if (requested.declinedBy.some(id => sameId(id, req.user.id))) return unavailable();
+
+    const now = Date.now();
+    let rideIds;
+    if (requested.pool) {
+      // Lock the pool first — only one driver can win this update
+      const pool = await RidePool.findOneAndUpdate(
+        { _id: requested.pool, status: "open" },
+        { status: "locked", driver: req.user.id },
+        { new: true }
+      );
+      if (!pool) return unavailable();
+      await Ride.updateMany(
+        { _id: { $in: pool.rides }, status: "requested", driver: null },
+        { driver: req.user.id, status: "accepted", acceptedAt: now }
+      );
+      rideIds = pool.rides;
+    } else {
+      const claimed = await Ride.findOneAndUpdate(
+        { _id: requested._id, status: "requested", driver: null },
+        { driver: req.user.id, status: "accepted", acceptedAt: now },
+        { new: true }
+      );
+      if (!claimed) return unavailable();
+      rideIds = [claimed._id];
     }
 
-    const populatedRide = await Ride.findById(ride._id)
+    const rides = await Ride.find({ _id: { $in: rideIds }, driver: req.user.id, status: "accepted" })
       .populate("passenger", "name phone guardianContacts")
-      .populate("driver",    "name phone driverDetails averageRating");
+      .sort({ createdAt: 1 });
+    if (!rides.length) return unavailable();
 
-    // ── Auto-notify guardian contacts that driver has been assigned ──
-    const activeGuardians = (populatedRide.passenger.guardianContacts || []).filter(c => c.isActive);
-    if (activeGuardians.length > 0) {
-      console.log(`📱 Guardian Auto-Notify: Driver assigned for ${populatedRide.passenger.name}`);
-      activeGuardians.forEach(g => {
-        console.log(`  → Notifying ${g.name} (${g.phone}): Driver ${driver.name} | ${driver.driverDetails?.licensePlate} is on the way`);
+    const driverInfo = {
+      _id:          driver._id,
+      name:         driver.name,
+      phone:        driver.phone,
+      rating:       driver.totalRatings ? driver.averageRating : null,
+      totalRides:   driver.totalRides,
+      verified:     driver.isVerified === true && driver.driverDetails?.backgroundCheck === "passed",
+      vehicle:      `${driver.driverDetails?.vehicleMake || ""} ${driver.driverDetails?.vehicleModel || ""}`.trim(),
+      vehicleColor: driver.driverDetails?.vehicleColor,
+      licensePlate: driver.driverDetails?.licensePlate,
+    };
+
+    for (const r of rides) {
+      // The server tells each passenger directly (does not depend on the driver's app)
+      realtime.toUser(r.passenger._id, "ride:driver-found", {
+        rideId: r._id, driver: driverInfo,
+        pool: rides.length > 1 ? { passengers: rides.length, yourFare: r.farePerPassenger } : null,
       });
+      const guardians = (r.passenger.guardianContacts || []).filter(c => c.isActive);
+      if (guardians.length) {
+        console.log(`📱 [DEMO — SMS NOT SENT] Guardian notice: driver assigned for ${r.passenger.name}`);
+        guardians.forEach(g => console.log(`  → ${g.name} (${g.phone}): Driver ${driver.name} | ${driverInfo.licensePlate} is on the way`));
+      }
+      matching.withdrawOffer(r, "accepted_by_other_driver");
     }
+
+    // Driver-facing view: no guardian contacts, no OTPs
+    const stops = rides.map(r => ({
+      rideId:            r._id,
+      passengerName:     r.passenger.name,
+      passengerPhone:    r.passenger.phone,
+      pickupAddress:     r.pickupLocation.address,
+      pickupCoordinates: r.pickupLocation.coordinates,
+      dropoffAddress:    r.dropoffLocation.address,
+      dropoffCoordinates: r.dropoffLocation.coordinates,
+      fare:              r.farePerPassenger || r.estimatedFare,
+      distanceKm:        r.distanceKm,
+      durationMin:       r.estimatedDurationMinutes,
+      moodPreference:    r.moodPreference,
+      status:            r.status,
+    }));
 
     res.status(200).json({
       success: true,
-      message: "Ride accepted! Navigate to pickup location.",
-      ride: populatedRide,
-      guardianAutoNotified: activeGuardians.length > 0,
+      message: rides.length > 1 ? `Pool accepted — ${rides.length} passengers. Navigate to the first pickup.` : "Ride accepted! Navigate to pickup location.",
+      isPooled: rides.length > 1,
+      stops,
+      ride: stops[0],
     });
 
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ════════════════════════════════════════
+//  @route  PUT /api/rides/:id/decline
+//  The request will not be offered to this driver again
+// ════════════════════════════════════════
+exports.declineRide = async (req, res) => {
+  try {
+    if (req.user.role !== "driver") return res.status(403).json({ success: false, message: "Only drivers can decline rides" });
+    const ride = await Ride.findOneAndUpdate(
+      { _id: req.params.id, status: "requested" },
+      { $addToSet: { declinedBy: req.user._id } },
+      { new: true }
+    );
+    if (!ride) return res.status(404).json({ success: false, message: "Request not found or no longer open" });
+    if (ride.pool) await Ride.updateMany({ pool: ride.pool, status: "requested" }, { $addToSet: { declinedBy: req.user._id } });
+    res.json({ success: true, message: "Request declined" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -323,6 +399,7 @@ exports.verifyOTP = async (req, res) => {
         ride.cancelReason = `Ride cancelled: OTP verification failed ${ride.otpFailureCount} times — possible fake/unsafe ride`;
         ride.cancelledAt  = Date.now();
         await ride.save();
+        await matching.leavePool(ride);
 
         await User.findByIdAndUpdate(req.user.id, { otpFailureFlagged: true });
 
@@ -361,9 +438,9 @@ exports.verifyOTP = async (req, res) => {
 
     const activeGuardians = (fullRide.passenger.guardianContacts || []).filter(c => c.isActive);
     if (activeGuardians.length > 0) {
-      console.log(`🛡️ Guardian Ride-Start Notification: ${fullRide.passenger.name}'s ride has started`);
+      console.log(`🛡️ [DEMO — SMS NOT SENT] Guardian notice: ${fullRide.passenger.name}'s ride has started`);
       activeGuardians.forEach(g => {
-        console.log(`  → SMS to ${g.name} (${g.phone}): Ride started | Driver: ${fullRide.driver?.name} | Plate: ${fullRide.driver?.driverDetails?.licensePlate}`);
+        console.log(`  → ${g.name} (${g.phone}): Ride started | Driver: ${fullRide.driver?.name} | Plate: ${fullRide.driver?.driverDetails?.licensePlate}`);
       });
     }
 
@@ -381,7 +458,9 @@ exports.verifyOTP = async (req, res) => {
 
 // ════════════════════════════════════════
 //  @route  PUT /api/rides/:id/complete
-//  With final dynamic fare + guardian notification
+//  Final fare from the actual trip: GPS distance (when the recorded track is
+//  complete enough, otherwise the planned route) + actual duration.
+//  Pooled passengers keep the pool discount ratio agreed when the pool formed.
 // ════════════════════════════════════════
 exports.completeRide = async (req, res) => {
   try {
@@ -393,44 +472,68 @@ exports.completeRide = async (req, res) => {
       return res.status(400).json({ success: false, message: "Ride is not in progress" });
     }
 
-    // ── Final fare using actual duration ──
     const durationMinutes = ride.startedAt
-      ? Math.round((Date.now() - ride.startedAt.getTime()) / 60000)
+      ? Math.max(1, Math.round((Date.now() - ride.startedAt.getTime()) / 60000))
       : 0;
+    const billed = billableDistance(ride.distanceKm, ride.routeCoordinates);
+    const finalSolo = soloFare(billed.distanceKm, durationMinutes, ride.rideType);
 
-    const fareDetails  = calculateFare(ride.distanceKm, durationMinutes, ride.isPooled, ride.rideType);
-    ride.actualFare    = fareDetails.total;
-    ride.fareBreakdown = fareDetails;
-    ride.farePerPassenger = fareDetails.farePerPassenger;
-    ride.status        = "completed";
-    ride.completedAt   = Date.now();
-    ride.durationMinutes = durationMinutes;
-    await ride.save();
+    // Pool: same share ratio as agreed (share / solo at booking)
+    let payable = finalSolo.total;
+    let discount = 0;
+    if (ride.pool && ride.soloFare > 0 && ride.farePerPassenger < ride.soloFare) {
+      const ratio = ride.farePerPassenger / ride.soloFare;
+      payable  = Math.round(Math.min(finalSolo.total, Math.max(FARE.pool.minimumShare, finalSolo.total * ratio)));
+      discount = finalSolo.total - payable;
+    }
+
+    // Guarded update so a repeated "complete" request can't apply twice
+    const done = await Ride.findOneAndUpdate(
+      { _id: ride._id, status: "in_progress" },
+      {
+        status: "completed", completedAt: Date.now(),
+        durationMinutes,
+        billedDistanceKm: billed.distanceKm,
+        distanceSource:   billed.source,
+        actualFare:       payable,
+        farePerPassenger: payable,
+        fareBreakdown:    breakdown(finalSolo, discount),
+      },
+      { new: true }
+    );
+    if (!done) return res.status(400).json({ success: false, message: "Ride is not in progress" });
 
     await User.findByIdAndUpdate(req.user.id, { $inc: { totalRides: 1 } });
     await User.findByIdAndUpdate(ride.passenger, { $inc: { totalRides: 1 } });
+
+    // Close the pool when nobody is left riding
+    if (ride.pool) {
+      const stillActive = await Ride.exists({ pool: ride.pool, status: { $in: ACTIVE_STATUSES } });
+      if (!stillActive) await RidePool.updateOne({ _id: ride.pool }, { status: "closed" });
+    }
 
     // ── Notify guardians ride is complete ──
     const fullRide = await Ride.findById(ride._id).populate("passenger", "name phone guardianContacts");
     const activeGuardians = (fullRide.passenger.guardianContacts || []).filter(c => c.isActive);
     if (activeGuardians.length > 0) {
-      console.log(`✅ Guardian Ride-Complete Notification: ${fullRide.passenger.name} arrived safely`);
-      activeGuardians.forEach(g => {
-        console.log(`  → SMS to ${g.name} (${g.phone}): ${fullRide.passenger.name} has arrived safely!`);
-      });
+      console.log(`✅ [DEMO — SMS NOT SENT] Guardian notice: ${fullRide.passenger.name} arrived safely`);
+      activeGuardians.forEach(g => console.log(`  → ${g.name} (${g.phone}): ${fullRide.passenger.name} has arrived safely!`));
     }
 
     res.status(200).json({
       success: true,
       message: "Ride completed successfully! 🌸",
       ride: {
-        _id:              ride._id,
-        actualFare:       ride.actualFare,
-        farePerPassenger: ride.farePerPassenger,
-        fareBreakdown:    ride.fareBreakdown,
+        _id:              done._id,
+        actualFare:       done.actualFare,
+        farePerPassenger: done.farePerPassenger,
+        fareBreakdown:    done.fareBreakdown,
         durationMinutes,
-        distanceKm:       ride.distanceKm,
-        status:           ride.status,
+        distanceKm:       billed.distanceKm,
+        distanceSource:   billed.source,
+        plannedDistanceKm: ride.distanceKm,
+        isPooled:         !!ride.pool,
+        status:           done.status,
       },
       guardianNotified: activeGuardians.length > 0,
     });
@@ -454,10 +557,19 @@ exports.cancelRide = async (req, res) => {
     if (!["requested", "accepted", "arrived"].includes(ride.status)) {
       return res.status(400).json({ success: false, message: `Cannot cancel a ride that is ${ride.status}` });
     }
+    const byDriver = isDriver(ride, req.user);
+    const wasRequested = ride.status === "requested";
     ride.status       = "cancelled";
-    ride.cancelReason = `${isDriver(ride, req.user) ? "Driver" : "Passenger"}: ${reason || "No reason given"}`;
+    ride.cancelReason = `${byDriver ? "Driver" : "Passenger"}: ${reason || "No reason given"}`;
     ride.cancelledAt  = Date.now();
     await ride.save();
+
+    if (wasRequested) matching.withdrawOffer(ride, "cancelled");
+    await matching.leavePool(ride);
+    // Let the other side know
+    if (byDriver) realtime.toUser(ride.passenger, "ride:cancelled", { rideId: ride._id, by: "driver", message: "Your driver cancelled this ride. You have not been charged." });
+    else if (ride.driver) realtime.toUser(ride.driver, "ride:cancelled", { rideId: ride._id, by: "passenger", message: "The passenger cancelled this ride." });
+
     res.status(200).json({ success: true, message: "Ride cancelled" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -525,6 +637,7 @@ exports.getMyRides = async (req, res) => {
     const asDriver = req.user.role === "driver" && req.query.as !== "passenger";
     const query = asDriver ? { driver: req.user.id } : { passenger: req.user.id };
     const rides = await Ride.find(query)
+      .select("-routeCoordinates -preferredRoute.coordinates")
       .populate("driver",    "name averageRating driverDetails")
       .populate("passenger", "name phone")
       .populate("rating")
@@ -537,22 +650,24 @@ exports.getMyRides = async (req, res) => {
 
 // ════════════════════════════════════════
 //  @route  GET /api/rides/:id
-//  Participants and admins only; OTP included for the passenger only
+//  Participants and admins only. OTP and guardian contacts are included for
+//  the passenger herself (and admins) only — never for the driver.
 // ════════════════════════════════════════
 exports.getRideById = async (req, res) => {
   try {
-    const query = Ride.findById(req.params.id)
-      .populate("driver",    "name phone averageRating driverDetails")
+    const ride = await Ride.findById(req.params.id)
+      .populate("driver",    "name phone averageRating totalRatings driverDetails")
       .populate("passenger", "name phone guardianContacts")
-      .populate("rating");
-
-    const ride = await query.select("+otp");
+      .populate("rating")
+      .select("+otp");
     if (!ride || (!isParticipant(ride, req.user) && req.user.role !== "admin")) {
       return res.status(404).json({ success: false, message: "Ride not found" });
     }
 
     const out = ride.toObject();
-    if (!isPassenger(ride, req.user)) delete out.otp;
+    const passengerSelf = isPassenger(ride, req.user);
+    if (!passengerSelf) delete out.otp;
+    if (!passengerSelf && req.user.role !== "admin" && out.passenger) delete out.passenger.guardianContacts;
     res.status(200).json({ success: true, ride: out });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -577,7 +692,7 @@ exports.activateSOS = async (req, res) => {
     res.status(200).json({
       success: true,
       message: "SOS activated! Emergency contacts have been notified.",
-      guardianContacts: ride.passenger.guardianContacts,
+      guardianContacts: isPassenger(ride, req.user) ? ride.passenger.guardianContacts : undefined,
       driverInfo: ride.driver ? {
         name:         ride.driver.name,
         phone:        ride.driver.phone,
@@ -592,7 +707,7 @@ exports.activateSOS = async (req, res) => {
 
 // ════════════════════════════════════════
 //  @route  GET /api/rides/:id/live-fare
-//  Real-time fare update during ride
+//  Running fare from the GPS track so far + elapsed time (same rules as the final fare)
 // ════════════════════════════════════════
 exports.getLiveFare = async (req, res) => {
   try {
@@ -604,15 +719,17 @@ exports.getLiveFare = async (req, res) => {
     const durationMinutes = ride.startedAt
       ? Math.round((Date.now() - ride.startedAt.getTime()) / 60000)
       : 0;
-
-    const fareDetails = calculateFare(ride.distanceKm, durationMinutes, ride.isPooled, ride.rideType);
+    const travelledKm = trackDistanceKm(ride.routeCoordinates);
+    const f = soloFare(travelledKm, durationMinutes, ride.rideType);
+    const ratio = ride.pool && ride.soloFare > 0 ? ride.farePerPassenger / ride.soloFare : 1;
 
     res.status(200).json({
       success: true,
-      liveFare: fareDetails.total,
-      farePerPassenger: fareDetails.farePerPassenger,
-      fareBreakdown: fareDetails,
+      liveFare: Math.round(f.total * ratio),
+      soloFare: f.total,
+      travelledKm,
       durationMinutes,
+      fareBreakdown: breakdown(f),
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
