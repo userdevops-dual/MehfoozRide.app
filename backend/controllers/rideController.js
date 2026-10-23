@@ -14,6 +14,7 @@ const { haversine } = require("../utils/routeDeviation");
 const geo      = require("../services/geo");
 const matching = require("../services/matching");
 const routeMonitor = require("../services/routeMonitor");
+const emergency = require("../services/emergency");
 const { driverVerification } = require("../services/verification");
 const realtime = require("../services/realtime");
 const { FARE, soloFare, poolEstimateFor, billableDistance, trackDistanceKm, validRideType } = require("../services/fare");
@@ -713,32 +714,15 @@ exports.getRideById = async (req, res) => {
 // ════════════════════════════════════════
 exports.activateSOS = async (req, res) => {
   try {
-    const ride = await Ride.findById(req.params.id)
-      .populate("passenger", "name phone guardianContacts")
-      .populate("driver",    "name phone driverDetails");
-    if (!ride || !isParticipant(ride, req.user)) {
-      return res.status(404).json({ success: false, message: "Ride not found" });
-    }
-
-    ride.sosActivated = true;
-    await ride.save();
-
-    res.status(200).json({
-      success: true,
-      message: "SOS activated! Emergency contacts have been notified.",
-      guardianContacts: isPassenger(ride, req.user) ? ride.passenger.guardianContacts : undefined,
-      driverInfo: ride.driver ? {
-        name:         ride.driver.name,
-        phone:        ride.driver.phone,
-        licensePlate: ride.driver.driverDetails?.licensePlate,
-        vehicle:      `${ride.driver.driverDetails?.vehicleMake || ""} ${ride.driver.driverDetails?.vehicleModel || ""}`.trim(),
-      } : null,
+    // Same workflow as POST /api/emergency
+    const { session, created } = await emergency.start({
+      userId: req.user.id, rideId: req.params.id, coordinates: req.body?.coordinates, accuracy: req.body?.accuracy,
     });
+    res.status(created ? 201 : 200).json({ success: true, created, session: emergency.view(session) });
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(error.status || 500).json({ success: false, message: error.message });
   }
 };
-
 // ════════════════════════════════════════
 //  @route  GET /api/rides/:id/live-fare
 //  Running fare from the GPS track so far + elapsed time (same rules as the final fare)
@@ -765,6 +749,120 @@ exports.getLiveFare = async (req, res) => {
       durationMinutes,
       fareBreakdown: breakdown(f),
     });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ════════════════════════════════════════
+//  SAFE POINTS — real map locations the passenger marks for this trip
+//  POST   /api/rides/:id/safe-points                    { name, type, address, coordinates:[lng,lat], source }
+//  DELETE /api/rides/:id/safe-points/:pointId
+//  POST   /api/rides/:id/safe-points/:pointId/request   "take me there" → driver gets the point + route
+//  PUT    /api/rides/:id/safe-point-ack                 driver acknowledges the request
+// ════════════════════════════════════════
+const SAFE_POINT_STATUSES = ["requested", "accepted", "arrived", "in_progress"];
+const SAFE_TYPES = ["police", "hospital", "public", "other"];
+
+const safePointView = (p) => ({
+  _id: p._id, name: p.name, type: p.type, address: p.address, source: p.source, addedAt: p.addedAt,
+  coordinates: p.coordinates,
+});
+
+exports.addSafePoint = async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id);
+    if (!ride || !isPassenger(ride, req.user)) return res.status(404).json({ success: false, message: "Ride not found" });
+    if (!SAFE_POINT_STATUSES.includes(ride.status)) return res.status(400).json({ success: false, message: "Safe points can only be marked on an active ride" });
+    const { name, type, address, coordinates, source } = req.body || {};
+    const c = Array.isArray(coordinates) ? coordinates.map(Number) : null;
+    if (!c || c.length !== 2 || !c.every(Number.isFinite) || !inServiceArea(fromLngLat(c))) {
+      return res.status(400).json({ success: false, message: "A valid map location [lng, lat] in Pakistan is required" });
+    }
+    const label = String(name || "").trim().slice(0, 120);
+    if (!label) return res.status(400).json({ success: false, message: "Give the safe point a name" });
+    if (ride.safePoints.length >= config.safePlaces.maxPerRide) {
+      return res.status(400).json({ success: false, message: `You can mark up to ${config.safePlaces.maxPerRide} safe points per ride` });
+    }
+    ride.safePoints.push({
+      name: label,
+      type: SAFE_TYPES.includes(type) ? type : "other",
+      address: String(address || "").slice(0, 300),
+      coordinates: c,
+      source: ["osm", "search", "map"].includes(source) ? source : "map",
+    });
+    await ride.save();
+    const points = ride.safePoints.map(safePointView);
+    if (ride.driver) realtime.toUser(ride.driver, "ride:safe-points-updated", { rideId: ride._id, safePoints: points });
+    res.status(201).json({ success: true, safePoints: points });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.removeSafePoint = async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id);
+    if (!ride || !isPassenger(ride, req.user)) return res.status(404).json({ success: false, message: "Ride not found" });
+    const before = ride.safePoints.length;
+    ride.safePoints = ride.safePoints.filter(p => String(p._id) !== String(req.params.pointId));
+    if (ride.safePoints.length === before) return res.status(404).json({ success: false, message: "Safe point not found" });
+    if (String(ride.safePointRequest?.pointId) === String(req.params.pointId)) ride.safePointRequest = undefined;
+    await ride.save();
+    const points = ride.safePoints.map(safePointView);
+    if (ride.driver) realtime.toUser(ride.driver, "ride:safe-points-updated", { rideId: ride._id, safePoints: points });
+    res.json({ success: true, safePoints: points });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.requestSafePoint = async (req, res) => {
+  try {
+    const ride = await Ride.findById(req.params.id).populate("passenger", "name");
+    if (!ride || !isPassenger(ride, req.user)) return res.status(404).json({ success: false, message: "Ride not found" });
+    if (!ride.driver || !["accepted", "arrived", "in_progress"].includes(ride.status)) {
+      return res.status(400).json({ success: false, message: "There is no driver on this ride yet" });
+    }
+    const point = ride.safePoints.id(req.params.pointId);
+    if (!point) return res.status(404).json({ success: false, message: "Safe point not found" });
+
+    ride.safePointRequest = { pointId: point._id, requestedAt: new Date() };
+    await ride.save();
+
+    // Navigation: road route from the driver's last GPS position to the safe point
+    const driver = await User.findById(ride.driver).select("location locationUpdatedAt");
+    let route = null;
+    const from = driver?.locationUpdatedAt ? fromLngLat(driver.location.coordinates) : null;
+    if (from) {
+      try {
+        const r = (await geo.routes(from, fromLngLat(point.coordinates)))[0];
+        route = { distanceKm: r.distanceKm, durationMin: r.durationMin, coordinates: r.coordinates, source: "osrm" };
+      } catch (e) {
+        const km = haversine(from.lat, from.lng, point.coordinates[1], point.coordinates[0]);
+        route = { distanceKm: Math.round(km * 10) / 10, durationMin: null, coordinates: null, source: "straight_line" };
+      }
+    }
+    const payload = { rideId: ride._id, passengerName: ride.passenger.name, point: safePointView(point), route, requestedAt: ride.safePointRequest.requestedAt };
+    realtime.toUser(ride.driver, "ride:safe-point-requested", payload);
+    realtime.toAdmins("admin:safe-point-requested", payload);
+    res.json({ success: true, ...payload });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+exports.acknowledgeSafePoint = async (req, res) => {
+  try {
+    const ride = await Ride.findOneAndUpdate(
+      { _id: req.params.id, driver: req.user.id, "safePointRequest.pointId": { $exists: true } },
+      { "safePointRequest.acknowledgedAt": new Date() },
+      { new: true }
+    );
+    if (!ride) return res.status(404).json({ success: false, message: "No safe-point request on this ride" });
+    const point = ride.safePoints.id(ride.safePointRequest.pointId);
+    realtime.toUser(ride.passenger, "ride:safe-point-acknowledged", { rideId: ride._id, point: point && safePointView(point) });
+    res.json({ success: true });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

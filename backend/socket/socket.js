@@ -10,6 +10,7 @@ const jwt  = require('jsonwebtoken');
 const User = require('../models/User');
 const Ride = require('../models/Ride');
 const routeMonitor = require('../services/routeMonitor');
+const emergency    = require('../services/emergency');
 
 // ── Guardian Notification Helper ─────────────────────────────────────────
 // In production: call Twilio SMS / WhatsApp API here
@@ -256,48 +257,21 @@ const initSocket = (io) => {
     });
 
     // ── SOS EMERGENCY + guardian + admin ───────────────────────────────────
-    socket.on('sos:activated', async ({ rideId, coordinates } = {}) => {
+    socket.on('sos:activated', async ({ rideId, coordinates, accuracy } = {}) => {
       try {
-        const ride = await Ride.findById(rideId)
-          .populate('passenger', 'name phone guardianContacts')
-          .populate('driver', 'name phone driverDetails');
-        if (!ride) return;
-        if (!sameId(ride.passenger._id, userId) && !sameId(ride.driver?._id, userId)) return;
-
-        ride.sosActivated = true;
-        await ride.save();
-
-        const location = isValidCoordinates(coordinates) ? coordinates : null;
-
-        notifyGuardians(ride.passenger.guardianContacts, 'sos_alert', {
-          passengerName: ride.passenger.name,
-          driverName:    ride.driver?.name || 'Driver',
-          licensePlate:  ride.driver?.driverDetails?.licensePlate || 'N/A',
-          coordinates:   location,
-        });
-
-        // Admins only — this payload contains phone numbers
-        io.to('admins').emit('admin:sos-alert', {
-          rideId,
-          raisedBy:       role,
-          passenger:      ride.passenger.name,
-          passengerPhone: ride.passenger.phone,
-          driver:         ride.driver?.name,
-          driverPhone:    ride.driver?.phone,
-          licensePlate:   ride.driver?.driverDetails?.licensePlate,
-          coordinates:    location,
-          timestamp:      new Date(),
-        });
-
+        // Same workflow as POST /api/emergency (services/emergency.js)
+        const { session } = await emergency.start({ userId, rideId: rideId || undefined, coordinates, accuracy });
+        const v = emergency.view(session);
         socket.emit('sos:confirmed', {
-          message: '🆘 SOS sent! Your emergency contacts and the safety team have been alerted.',
-          guardianCount: (ride.passenger.guardianContacts || []).filter(c => c.isActive).length,
+          sessionId: v._id,
+          contacts: v.contactNotifications.map(c => ({ name: c.name, status: c.status })),
+          police: v.police,
         });
       } catch (err) {
+        socket.emit('sos:error', { message: err.status ? err.message : 'SOS could not be recorded on the server — call 15 directly.' });
         console.error('SOS socket error:', err.message);
       }
     });
-
     // ── OTP FAILURE ALERT (fake ride detection) ────────────────────────────
     // The failure count is read from the database, not taken from the client.
     socket.on('ride:otp-failed', async ({ rideId } = {}) => {

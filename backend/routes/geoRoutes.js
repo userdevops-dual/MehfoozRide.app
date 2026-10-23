@@ -39,4 +39,13 @@ router.get('/route', handle(async (req, res) => {
   res.json({ success: true, routes: await geo.routes(from, to) });
 }));
 
+// GET /api/geo/safe-places?lat=..&lng=..&type=police|hospital|public
+router.get('/safe-places', handle(async (req, res) => {
+  const p = parsePoint(req.query.lat, req.query.lng);
+  if (!p) return res.status(400).json({ success: false, message: 'Valid lat and lng are required' });
+  const type = ['police', 'hospital', 'public'].includes(req.query.type) ? req.query.type : undefined;
+  const places = await geo.safePlaces(p, type);
+  res.json({ success: true, count: places.length, places, source: 'OpenStreetMap' });
+}));
+
 module.exports = router;

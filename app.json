@@ -13,7 +13,14 @@
           "photosPermission": "Mehfooz Ride needs access to your photos so you can upload your CNIC.",
           "cameraPermission": "Mehfooz Ride needs the camera so you can photograph your CNIC and take a verification selfie."
         }
-      ]
+      ],
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false
+        }
+      ],
+      "expo-splash-screen"
     ]
   }
 }

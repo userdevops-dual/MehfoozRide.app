@@ -8,14 +8,14 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView, StyleSheet,
-  Alert, TextInput, ActivityIndicator, Modal, Linking,
+  Alert, TextInput, ActivityIndicator, Modal, Linking, Vibration,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import { rideAPI } from '../../services/api';
 import {
   emitDriverArrived, emitOTPVerified, emitRideCompleted, emitOTPFailed, emitDriverLocation,
-  onIncomingRide, onRequestWithdrawn, onRideCancelled,
+  onIncomingRide, onRequestWithdrawn, onRideCancelled, onEvent,
 } from '../../services/socket';
 import OSMMap from '../../components/OSMMap';
 import { C, GRAD } from '../../utils/theme';
@@ -53,6 +53,8 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
   const [now,      setNow]      = useState(Date.now());
   const [genderCheckFor, setGenderCheckFor] = useState(null);
   const [myLoc,    setMyLoc]    = useState(null);
+  const [safePts,  setSafePts]  = useState({});           // rideId → passenger's safe points
+  const [safeReq,  setSafeReq]  = useState(null);         // { rideId, passengerName, point, route }
   const closed = useRef(false);
   const accepting = useRef(false);
 
@@ -107,6 +109,36 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
     });
     return () => off && off();
   }, [phase, stops]);
+
+  // Passenger safety: safe points, "take me to a safe point" requests, SOS
+  useEffect(() => {
+    if (phase !== 'active') return;
+    const mine = (id) => stops.some(x => String(x.rideId) === String(id));
+    const offs = [
+      onEvent('ride:safe-points-updated', d => { if (mine(d?.rideId)) setSafePts(m => ({ ...m, [d.rideId]: d.safePoints || [] })); }),
+      onEvent('ride:safe-point-requested', d => {
+        if (!mine(d?.rideId)) return;
+        setSafeReq(d);
+        Vibration.vibrate([0, 400, 200, 400]);
+      }),
+      onEvent('sos:raised', d => {
+        if (!mine(d?.rideId) || d.byRole !== 'passenger') return;
+        const s = stops.find(x => String(x.rideId) === String(d.rideId));
+        Alert.alert('🆘 Passenger raised SOS', ` pressed SOS. Her emergency contacts and the safety team can see the trip. Stop safely and follow her instructions or a safe-point request.`);
+      }),
+    ];
+    return () => offs.forEach(off => off && off());
+  }, [phase, stops]);
+
+  const acknowledgeSafePoint = async () => {
+    try { await rideAPI.ackSafePoint(safeReq.rideId); setSafeReq(r => r && { ...r, acknowledged: true }); }
+    catch (e) { Alert.alert('Could not acknowledge', errorMessage(e)); }
+  };
+  const navigateTo = ([lng, lat]) => Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`).catch(() => {});
+  const driverSOS = () => Alert.alert('🆘 SOS', 'Start an emergency session? Your contacts get your live location and the dialer opens for Police 15.', [
+    { text: 'Cancel', style: 'cancel' },
+    { text: '🆘 YES, SOS', style: 'destructive', onPress: () => navigation.navigate('SOSScreen', { rideId: current || stops[0]?.rideId }) },
+  ]);
 
   // Live location for every active passenger's ride (several when pooled)
   const activeIds = useMemo(() => stops.filter(s => ACTIVE.includes(s.status)).map(s => s.rideId), [stops]);
@@ -265,8 +297,10 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
         ...(d && !done ? [{ id: `d${i}`, ...d, color: C.rose, label: `Drop-off ${i + 1}: ${s.passengerName}` }] : []),
       ];
     }),
+    ...Object.values(safePts).flat().map(sp => ({ id: `safe-${sp._id}`, latitude: sp.coordinates[1], longitude: sp.coordinates[0], emoji: '⭐', label: `Safe point: ${sp.name}` })),
   ];
-  const mapFitKey = `${phase}|${shown.map(s => s.status).join(',')}`;
+  const mapRoutes = safeReq?.route?.coordinates ? [{ id: 'to-safe', coordinates: safeReq.route.coordinates, color: C.success, weight: 5 }] : [];
+  const mapFitKey = `${phase}|${shown.map(s => s.status).join(',')}|${safeReq?.point?._id || ''}`;
 
   // ── Done ─────────────────────────────────────────────────────────────────
   if (phase === 'done') {
@@ -346,6 +380,9 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
           {phase === 'incoming' && secondsLeft != null && (
             <View style={styles.timerBadge}><Text style={styles.timerText}>⏳ {fmt(secondsLeft)}</Text></View>
           )}
+          {phase === 'active' && (
+            <TouchableOpacity onPress={driverSOS} style={styles.sosBtn}><Text style={styles.sosText}>🆘 SOS</Text></TouchableOpacity>
+          )}
           {phase === 'active' && stop?.status === 'in_progress' && (
             <View style={styles.timerBadge}><Text style={styles.timerText}>{fmt(onBoard)}</Text></View>
           )}
@@ -354,7 +391,25 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
 
       <ScrollView showsVerticalScrollIndicator={false}>
         <OSMMap style={styles.map} center={myLoc || latLng(shown[0]?.pickupCoordinates)} zoom={14}
-          markers={markers} fitToContent={markers.length > 1} fitKey={mapFitKey} />
+          markers={markers} routes={mapRoutes} fitToContent={markers.length > 1} fitKey={mapFitKey} />
+
+        {/* Passenger asked to be taken to a safe point */}
+        {safeReq && (
+          <View style={styles.safeReq}>
+            <Text style={styles.safeReqTitle}>🛡️ {safeReq.passengerName} asked to go to a safe point</Text>
+            <Text style={styles.safeReqName}>{safeReq.point.name}</Text>
+            {!!safeReq.point.address && <Text style={styles.safeReqSub} numberOfLines={2}>{safeReq.point.address}</Text>}
+            <Text style={styles.safeReqSub}>
+              {safeReq.route ? `Route: ${safeReq.route.distanceKm} km${safeReq.route.durationMin ? ` · ~${safeReq.route.durationMin} min` : ''} (green line on the map)` : 'Route not available — use navigation'}
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 8 }}>
+              {!safeReq.acknowledged
+                ? <TouchableOpacity onPress={acknowledgeSafePoint} style={[styles.safeReqBtn, { backgroundColor: C.success }]}><Text style={styles.actionBtnText}>✓ Going there</Text></TouchableOpacity>
+                : <Text style={{ color: C.success, fontWeight: '700', alignSelf: 'center' }}>✓ Acknowledged</Text>}
+              <TouchableOpacity onPress={() => navigateTo(safeReq.point.coordinates)} style={[styles.safeReqBtn, { backgroundColor: C.info }]}><Text style={styles.actionBtnText}>🧭 Navigate</Text></TouchableOpacity>
+            </View>
+          </View>
+        )}
 
         {/* ── Request: review, accept or decline ─────────────────────────── */}
         {phase === 'incoming' && (
@@ -499,6 +554,13 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
+  sosBtn:       { backgroundColor: '#E53935', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6, marginRight: 8 },
+  sosText:      { color: '#fff', fontWeight: '900', fontSize: 12 },
+  safeReq:      { backgroundColor: '#fff', margin: 14, marginBottom: 0, borderRadius: 16, padding: 14, borderWidth: 2, borderColor: C.success },
+  safeReqTitle: { fontSize: 12, fontWeight: '800', color: C.success },
+  safeReqName:  { fontSize: 15, fontWeight: '800', color: C.text, marginTop: 4 },
+  safeReqSub:   { fontSize: 11, color: C.muted, marginTop: 3 },
+  safeReqBtn:   { flex: 1, borderRadius: 12, paddingVertical: 10, alignItems: 'center' },
   screen:           { flex: 1, backgroundColor: C.bg },
   header:           { padding: 20, paddingBottom: 16 },
   headerRow:        { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },

@@ -11,7 +11,7 @@ export default function SafetyCenterScreen({navigation}) {
     {ico:'📍', t:'Safe Points', d:'Hospitals & police nearby',       c:C.info, bg:C.infoBg,     sc:'SafePoints'},
     {ico:'🔐', t:'OTP Rides',   d:'Verify driver before every ride', c:C.success, bg:C.successBg, sc:null},
     {ico:'🚺', t:'Women Only',  d:'Only female drivers matched',      c:'#B07030', bg:C.goldLight, sc:null},
-    {ico:'⭐', t:'Ratings',     d:'Low-rated drivers auto-suspended', c:C.roseDark||'#8B1A4A', bg:C.rosePale, sc:'Profile'},
+    {ico:'⭐', t:'Ratings',     d:'Rate every ride after it ends', c:C.roseDark||'#8B1A4A', bg:C.rosePale, sc:'Profile'},
   ];
   const tips = [
     'Always verify OTP before ride starts',
@@ -35,7 +35,7 @@ export default function SafetyCenterScreen({navigation}) {
           <View style={styles.sosIcon}><Text style={{fontSize:32}}>🆘</Text></View>
           <View style={{flex:1}}>
             <Text style={{color:'white', fontSize:18, fontWeight:'800'}}>SOS Emergency</Text>
-            <Text style={{color:'rgba(255,255,255,0.8)', fontSize:12, marginTop:4, lineHeight:18}}>One tap sends your location to contacts & Rescue 1122</Text>
+            <Text style={{color:'rgba(255,255,255,0.8)', fontSize:12, marginTop:4, lineHeight:18}}>Starts an emergency session with your live location and opens the dialer for Police 15</Text>
           </View>
         </LinearGradient>
       </TouchableOpacity>

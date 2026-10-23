@@ -108,6 +108,23 @@ const RideSchema = new mongoose.Schema(
         thresholdM:    { type: Number },
       },
     ],
+    // Safe points the passenger marked for this trip (real map locations)
+    safePoints: [
+      {
+        name:        { type: String, required: true },
+        type:        { type: String, enum: ["police", "hospital", "public", "other"], default: "other" },
+        address:     { type: String, default: "" },
+        coordinates: { type: [Number], required: true },   // [lng, lat]
+        source:      { type: String, enum: ["osm", "search", "map"], default: "map" },
+        addedAt:     { type: Date, default: Date.now },
+      },
+    ],
+    // Passenger asked to be taken to one of them
+    safePointRequest: {
+      pointId:     { type: mongoose.Schema.Types.ObjectId },
+      requestedAt: { type: Date },
+      acknowledgedAt: { type: Date },
+    },
     lastProgress: {
       remainingKm: Number, progressPct: Number, etaMin: Number, offRouteM: Number, at: Date,
     },

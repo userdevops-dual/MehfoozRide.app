@@ -24,6 +24,7 @@ app.use('/api/rides',  require('./routes/rideRoutes'));
 app.use('/api/driver', require('./routes/driverRoutes'));
 app.use('/api/admin',  require('./routes/adminRoutes'));
 app.use('/api/geo',    require('./routes/geoRoutes'));
+app.use('/api/emergency', require('./routes/emergencyRoutes'));
 
 // ── Health Check ──────────────────────────────────────────────────────────────
 app.get('/', (req, res) => {

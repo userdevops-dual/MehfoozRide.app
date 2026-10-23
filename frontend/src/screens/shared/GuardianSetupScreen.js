@@ -9,6 +9,9 @@ import { authAPI } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { C, GRAD } from '../../utils/theme';
 
+const MAX_CONTACTS = 5;
+const RELATIONS = ['Mother', 'Father', 'Sister', 'Brother', 'Husband', 'Friend', 'Other'];
+
 export default function GuardianSetupScreen({ navigation }) {
   const { user, updateUser } = useAuth();
 
@@ -16,8 +19,8 @@ export default function GuardianSetupScreen({ navigation }) {
     user?.guardianContacts?.length > 0
       ? user.guardianContacts
       : [
-          { name: '', phone: '', isActive: false },
-          { name: '', phone: '', isActive: false },
+          { name: '', phone: '', relation: '', isActive: false },
+          { name: '', phone: '', relation: '', isActive: false },
         ]
   );
   const [guardianOn, setGuardianOn] = useState(
@@ -32,11 +35,11 @@ export default function GuardianSetupScreen({ navigation }) {
   };
 
   const addContact = () => {
-    if (contacts.length >= 3) {
-      Alert.alert('Max 3', 'You can add up to 3 guardian contacts.');
+    if (contacts.length >= MAX_CONTACTS) {
+      Alert.alert(`Max ${MAX_CONTACTS}`, `You can add up to ${MAX_CONTACTS} emergency contacts.`);
       return;
     }
-    setContacts([...contacts, { name: '', phone: '', isActive: false }]);
+    setContacts([...contacts, { name: '', phone: '', relation: '', isActive: false }]);
   };
 
   const removeContact = (index) => {
@@ -104,10 +107,10 @@ export default function GuardianSetupScreen({ navigation }) {
         <View style={styles.howCard}>
           <Text style={styles.sectionTitle}>🛡️ How Guardian Mode Works</Text>
           {[
-            'When you book a ride, contacts are notified automatically',
-            'They receive your live location + driver details',
-            'SOS alerts are sent instantly to all active contacts',
-            'Contacts don\'t need the app installed',
+            'When you press SOS, an emergency session starts with your live location, driver and trip details',
+            'Your contacts get a live-location link that opens in any browser — no app needed',
+            'Each contact shows whether the alert was really sent (in demo mode messages are logged, not sent — share the link yourself)',
+            'Contacts are told when you mark yourself safe',
           ].map((tip, i) => (
             <View key={i} style={styles.tipRow}>
               <View style={styles.tipNum}><Text style={{ color: C.rose, fontSize: 11, fontWeight: '700' }}>{i + 1}</Text></View>
@@ -117,13 +120,13 @@ export default function GuardianSetupScreen({ navigation }) {
         </View>
 
         {/* Contacts */}
-        <Text style={styles.sectionTitle}>👩‍👧 Trusted Contacts ({contacts.length}/3)</Text>
+        <Text style={styles.sectionTitle}>👩‍👧 Emergency Contacts ({contacts.length}/{MAX_CONTACTS})</Text>
 
         {contacts.map((contact, i) => (
           <View key={i} style={styles.contactCard}>
             <View style={styles.contactHeader}>
               <View style={styles.contactAvatar}>
-                <Text style={{ fontSize: 20 }}>{['👩', '👩‍👧', '👭'][i] || '👤'}</Text>
+                <Text style={{ fontSize: 20 }}>{contact.relation === 'Mother' ? '👩' : contact.relation === 'Father' ? '👨' : contact.relation === 'Sister' ? '👭' : '👤'}</Text>
               </View>
               <Text style={styles.contactNum}>Contact {i + 1}</Text>
               {contacts.length > 1 && (
@@ -154,10 +157,21 @@ export default function GuardianSetupScreen({ navigation }) {
                 style={styles.input}
               />
             </View>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Relation</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                {RELATIONS.map(r => (
+                  <TouchableOpacity key={r} onPress={() => updateContact(i, 'relation', r)}
+                    style={[styles.relChip, contact.relation === r && styles.relChipOn]}>
+                    <Text style={[styles.relChipTxt, contact.relation === r && { color: '#fff' }]}>{r}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
           </View>
         ))}
 
-        {contacts.length < 3 && (
+        {contacts.length < MAX_CONTACTS && (
           <TouchableOpacity onPress={addContact} style={styles.addBtn}>
             <Text style={{ color: C.rose, fontWeight: '700', fontSize: 14 }}>+ Add Another Contact</Text>
           </TouchableOpacity>
@@ -179,6 +193,9 @@ export default function GuardianSetupScreen({ navigation }) {
 }
 
 const styles = StyleSheet.create({
+  relChip:       { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 14, borderWidth: 1, borderColor: C.border, backgroundColor: '#fff' },
+  relChipOn:     { backgroundColor: C.rose, borderColor: C.rose },
+  relChipTxt:    { fontSize: 11, fontWeight: '600', color: C.text },
   screen:        { flex: 1, backgroundColor: C.bg },
   header:        { padding: 20, paddingTop: 50, paddingBottom: 24 },
   backBtn:       { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 20, width: 38, height: 38, alignItems: 'center', justifyContent: 'center', marginBottom: 12 },

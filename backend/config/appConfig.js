@@ -34,6 +34,34 @@ module.exports = {
     sweepIntervalSeconds:    15,    // how often expired requests are cleaned up
   },
 
+  // DEMO_MODE=true (default): services that need paid/official infrastructure
+  // (SMS to contacts, police dispatch) are simulated through the SAME workflow
+  // and data, and every simulated step is labelled "simulated" in the data and UI.
+  demoMode: (process.env.DEMO_MODE || 'true').toLowerCase() !== 'false',
+
+  // Emergency / SOS (services/emergency.js, services/notifier.js)
+  emergency: {
+    // "demo" logs messages on the server; "twilio" sends real SMS (needs TWILIO_* env vars)
+    notifyProvider:   (process.env.NOTIFY_PROVIDER || 'demo').toLowerCase(),
+    // No official police API is integrated. When one exists, set POLICE_API_URL
+    // and the incident payload is POSTed there; until then dispatch is "not_integrated".
+    policeApiUrl:     process.env.POLICE_API_URL || '',
+    policeNumber:     '15',
+    // Base URL guardians use to open the live-location page (must be reachable from their phones)
+    publicBaseUrl:    process.env.PUBLIC_BASE_URL || '',
+    liveLinkHours:    12,     // live-location link stops working after this
+    maxLocations:     2000,   // location points kept per session
+  },
+
+  // Nearby safe places (police, hospitals, public places) from OpenStreetMap via Overpass
+  safePlaces: {
+    // Tried in order — public Overpass servers are often busy. OVERPASS_URL (comma-separated) overrides.
+    overpassUrls: (process.env.OVERPASS_URL || 'https://overpass-api.de/api/interpreter,https://maps.mail.ru/osm/tools/overpass/api/interpreter,https://overpass.kumi.systems/api/interpreter').split(',').map(s => s.trim()).filter(Boolean),
+    radiusMeters: 3000,
+    maxResults:   25,
+    maxPerRide:   5,          // safe points a passenger can mark on one ride
+  },
+
   // Unusual-route detection (services/routeMonitor.js)
   routeMonitor: {
     deviationThresholdMeters:    250,  // further than this from the chosen road route counts as off-route

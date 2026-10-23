@@ -12,7 +12,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import { rideAPI } from '../../services/api';
 import {
-  emitSOS, onDriverLocation, onRouteDeviation, onRideStarted, onRideFinished, onRideCancelled,
+  onEvent, onDriverLocation, onRouteDeviation, onRideStarted, onRideFinished, onRideCancelled,
   onGuardianNotified, onOTPWarning, onFakeRideAlert, offEvent,
 } from '../../services/socket';
 import { useAuth } from '../../context/AuthContext';
@@ -34,7 +34,7 @@ export default function ActiveRideScreen({ navigation, route }) {
   // Live fare comes from the server (same rules as the final fare): driver's GPS track + elapsed time
   const [liveFare,          setLiveFare]           = useState(ride?.farePerPassenger || ride?.estimatedFare || null);
   const [distanceTravelled, setDistanceTravelled]  = useState(0);
-  const [showSafeDropMenu,  setShowSafeDropMenu]   = useState(false);
+  const [safePoints,        setSafePoints]         = useState([]);   // marked on this ride
   const [guardianBanner,    setGuardianBanner]     = useState(null);
   // Route monitoring — the server compares the driver's GPS with the route chosen at booking
   const [offRoute,          setOffRoute]           = useState(null);   // { offRouteM } while off-route
@@ -83,6 +83,7 @@ export default function ActiveRideScreen({ navigation, route }) {
       if (r.routeCoordinates?.length) setTrack(r.routeCoordinates.map(p => [p.coordinates[1], p.coordinates[0]]));
       if (r.routeDeviationActive) setOffRoute({ offRouteM: r.lastProgress?.offRouteM });
       if (r.lastProgress?.remainingKm != null) setProgress(r.lastProgress);
+      setSafePoints(r.safePoints || []);
       if (status === 'in_progress' && !startTime.current) {
         startTime.current = res.ride.startedAt ? new Date(res.ride.startedAt).getTime() : Date.now();
         setRideTime(Math.max(0, Math.round((Date.now() - startTime.current) / 1000)));
@@ -163,6 +164,18 @@ export default function ActiveRideScreen({ navigation, route }) {
       ]);
     });
 
+    // Safe points may have changed on the Safe Points screen
+    const offFocus = navigation.addListener('focus', () => {
+      if (ride?._id) rideAPI.getById(ride._id).then(r => setSafePoints(r.ride?.safePoints || [])).catch(() => {});
+    });
+    const offAck = onEvent('ride:safe-point-acknowledged', d => {
+      if (String(d?.rideId) === String(ride?._id)) Alert.alert('✅ Driver acknowledged', `Your driver is taking you to ${d.point?.name || 'your safe point'}.`);
+    });
+    // The driver raised SOS on this ride
+    const offSos = onEvent('sos:raised', d => {
+      if (String(d?.rideId) === String(ride?._id) && d.byRole === 'driver') Alert.alert('🆘 Driver raised SOS', 'Your driver pressed SOS. The safety team has been alerted. Use SOS too if you need help.');
+    });
+
     // The driver cancelled (e.g. could not reach the pickup)
     const offCancelled = onRideCancelled(data => {
       if (String(data?.rideId) !== String(ride?._id)) return;
@@ -180,6 +193,7 @@ export default function ActiveRideScreen({ navigation, route }) {
       offEvent('ride:finished');
       offEvent('ride:fake-ride-alert');
       offCancelled && offCancelled();
+      offFocus && offFocus(); offAck && offAck(); offSos && offSos();
     };
   }, []);
 
@@ -194,27 +208,12 @@ export default function ActiveRideScreen({ navigation, route }) {
   const fmt = s =>
     `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
+  // SOS screen starts the emergency session on the server (location, ride,
+  // driver, vehicle, route and contacts are captured there) and keeps GPS live
   const handleSOS = () => {
-    Alert.alert('🆘 SOS EMERGENCY', 'This will alert your emergency contacts and Police (15).', [
+    Alert.alert('🆘 SOS EMERGENCY', 'Start an emergency session? Your contacts get your live location and the dialer opens for Police 15.', [
       { text: 'Cancel', style: 'cancel' },
-      {
-        text: '🆘 YES, SEND SOS', style: 'destructive', onPress: () => {
-          // Always raise the alert, with or without a GPS fix
-          const loc = myLocationRef.current;
-          emitSOS(ride?._id, loc ? [loc.longitude, loc.latitude] : null);
-          rideAPI.sos(ride?._id).catch(() => {}); // REST backup in case the socket is down
-          navigation.navigate('SOSScreen', {
-            rideId: ride?._id,
-            guardianContacts: (user?.guardianContacts || []).filter(g => g.isActive),
-            driverInfo: driver ? {
-              name:    driver.name,
-              phone:   driver.phone || '',
-              plate:   driver.licensePlate || driver.driverDetails?.licensePlate || '',
-              vehicle: driver.vehicle || `${driver.driverDetails?.vehicleMake || ''} ${driver.driverDetails?.vehicleModel || ''}`.trim(),
-            } : null,
-          });
-        },
-      },
+      { text: '🆘 YES, SOS', style: 'destructive', onPress: () => navigation.navigate('SOSScreen', { rideId: ride?._id }) },
     ]);
   };
 
@@ -231,13 +230,7 @@ export default function ActiveRideScreen({ navigation, route }) {
     ...(myLocation ? [{ id: 'me', ...myLocation, label: 'You', color: '#2D7FF9' }] : []),
     ...(dropLat != null ? [{ id: 'dropoff', latitude: dropLat, longitude: dropLng, label: 'Destination', emoji: '🏁' }] : []),
     ...(driverLoc  ? [{ id: 'driver', ...driverLoc, label: driver?.name || 'Your Driver', emoji: '🚗' }] : []),
-  ];
-
-  const SAFE_LOCATIONS = [
-    { name: 'CMH Lahore (Hospital)',      addr: 'Jail Road, Lahore' },
-    { name: 'Model Town Police Station',  addr: 'Model Town Link Road' },
-    { name: 'Packages Mall',              addr: 'Walton Road, Lahore' },
-    { name: 'Jinnah Hospital',            addr: 'Jail Road, Lahore' },
+    ...safePoints.map(s => ({ id: `safe-${s._id}`, latitude: s.coordinates[1], longitude: s.coordinates[0], label: `⭐ ${s.name}`, emoji: '⭐' })),
   ];
 
   return (
@@ -300,35 +293,6 @@ export default function ActiveRideScreen({ navigation, route }) {
 
             <TouchableOpacity onPress={() => setShowOtpModal(false)} style={styles.otpDismissBtn}>
               <Text style={styles.otpDismissTxt}>Waiting for driver to scan... (tap to minimise)</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Safe Drop Modal */}
-      <Modal visible={showSafeDropMenu} transparent animationType="slide">
-        <View style={styles.otpOverlay}>
-          <View style={[styles.otpCard, { paddingBottom: 20 }]}>
-            <Text style={styles.otpTitle}>📍 Drop Me at a Safe Location</Text>
-            <Text style={{ fontSize: 12, color: C.muted, textAlign: 'center', marginBottom: 16 }}>
-              Your driver will be guided to a safe nearby location
-            </Text>
-            {SAFE_LOCATIONS.map(loc => (
-              <TouchableOpacity key={loc.name} style={styles.safeLocRow}
-                onPress={() => {
-                  setShowSafeDropMenu(false);
-                  Alert.alert('✅ Safe Drop Requested', `Driver has been asked to drop you at:\n\n${loc.name}\n${loc.addr}`);
-                }}>
-                <Text style={{ fontSize: 16 }}>📍</Text>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 13, fontWeight: '700', color: C.text }}>{loc.name}</Text>
-                  <Text style={{ fontSize: 11, color: C.muted }}>{loc.addr}</Text>
-                </View>
-                <Text style={{ color: C.rose, fontWeight: '700' }}>Select →</Text>
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity onPress={() => setShowSafeDropMenu(false)} style={{ marginTop: 12, alignItems: 'center' }}>
-              <Text style={{ color: C.muted, fontSize: 13 }}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -413,7 +377,7 @@ export default function ActiveRideScreen({ navigation, route }) {
         {[
           { ico: '🆘',  lbl: 'SOS',       color: C.danger,  bg: C.dangerBg,  fn: handleSOS },
           { ico: '🤙',  lbl: 'Fake Call', color: '#D4376A', bg: '#FFE4EF',   fn: () => navigation.navigate('FakeCall') },
-          { ico: '📍',  lbl: 'Safe Drop', color: C.info,    bg: C.infoBg,    fn: () => setShowSafeDropMenu(true) },
+          { ico: '📍',  lbl: 'Safe Drop', color: C.info,    bg: C.infoBg,    fn: () => navigation.navigate('SafePoints', { rideId: ride?._id }) },
           { ico: '👁️', lbl: 'Guardian',  color: C.plum,    bg: C.plumLight, fn: () => navigation.navigate('GuardianSetup') },
         ].map(b => (
           <TouchableOpacity key={b.lbl} onPress={b.fn}

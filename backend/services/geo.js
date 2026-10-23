@@ -124,4 +124,92 @@ exports.routes = async (from, to) => {
   });
 };
 
+// ── Nearby safe places from OpenStreetMap (Overpass API) ───────────────────
+// police: police stations · hospital: hospitals/clinics · public: staffed,
+// busy public places (malls, markets, fuel stations, pharmacies)
+const SAFE_TAGS = {
+  police:   ['["amenity"="police"]'],
+  hospital: ['["amenity"="hospital"]', '["amenity"="clinic"]'],
+  public:   ['["shop"="mall"]', '["amenity"="marketplace"]', '["amenity"="fuel"]', '["amenity"="pharmacy"]'],
+};
+const typeOf = (t = {}) =>
+  t.amenity === "police" ? "police"
+  : (t.amenity === "hospital" || t.amenity === "clinic") ? "hospital"
+  : "public";
+
+// Fallback for safePlaces: Nominatim keyword search inside a box around `near`
+const NOMINATIM_TERMS = { police: ["police"], hospital: ["hospital"], public: ["mall", "pharmacy"] };
+const safePlacesViaNominatim = async (near, types, radiusM) => {
+  const dLat = radiusM / 111320, dLng = radiusM / (111320 * Math.cos(near.lat * Math.PI / 180));
+  const viewbox = [near.lng - dLng, near.lat + dLat, near.lng + dLng, near.lat - dLat].join(",");
+  const out = [];
+  for (const type of types) {
+    for (const term of NOMINATIM_TERMS[type]) {
+      const params = new URLSearchParams({ q: term, format: "jsonv2", addressdetails: "1", limit: "10", bounded: "1", viewbox, countrycodes: geo.countryCodes });
+      const results = await throttled(() => getJson(`${geo.geocoderUrl}/search?${params}`));
+      for (const r of results) {
+        const lat = Number(r.lat), lng = Number(r.lon);
+        out.push({
+          id: `osm:${r.osm_type}/${r.osm_id}`, name: shortName(r) || r.display_name, type,
+          kind: r.type, address: r.display_name, lat: round(lat), lng: round(lng),
+          openingHours: null, phone: null,
+          distanceKm: Math.round(haversine(near.lat, near.lng, lat, lng) * 10) / 10,
+        });
+      }
+    }
+  }
+  const seen = new Set();
+  return out.filter(p => !seen.has(p.id) && seen.add(p.id))
+    .sort((a, b) => a.distanceKm - b.distanceKm).slice(0, config.safePlaces.maxResults);
+};
+
+exports.safePlaces = async (near, type) => {  const sp = config.safePlaces;
+  const types = type && SAFE_TAGS[type] ? [type] : Object.keys(SAFE_TAGS);
+  const r = sp.radiusMeters;
+  const parts = types.flatMap(t => SAFE_TAGS[t]).map(tag => `nwr${tag}(around:${r},${near.lat},${near.lng});`).join("");
+  const query = `[out:json][timeout:15];(${parts});out center 120;`;
+  const key = `sp:${types.join(",")}:${round(near.lat, 3)}:${round(near.lng, 3)}`;
+  return cached(key, async () => {
+    let data = null, lastError = "could not be reached";
+    for (const url of sp.overpassUrls) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "User-Agent": geo.userAgent, "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ data: query }),
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!res.ok) { lastError = `returned an error (${res.status})`; continue; }
+        data = await res.json();
+        break;
+      } catch (e) {
+        lastError = "could not be reached";
+      }
+    }
+    if (!data) {
+      // Overpass busy → same OpenStreetMap data through Nominatim, bounded to the area
+      const fallback = await safePlacesViaNominatim(near, types, r).catch(() => null);
+      if (fallback) return fallback;
+      throw new GeoError(`The safe-places service ${lastError}. Try again, or search for a place by name.`, 503);
+    }
+    const seen = new Set();
+    return (data.elements || [])
+      .map(e => {
+        const lat = e.lat ?? e.center?.lat, lng = e.lon ?? e.center?.lon;
+        const t = e.tags || {};
+        if (lat == null || !t.name) return null;      // unnamed places are hard to find in a hurry
+        const a = [t["addr:housenumber"], t["addr:street"], t["addr:suburb"] || t["addr:city"]].filter(Boolean).join(", ");
+        return {
+          id: `osm:${e.type}/${e.id}`, name: t["name:en"] || t.name, type: typeOf(t),
+          kind: t.amenity || t.shop, address: a, lat: round(lat), lng: round(lng),
+          openingHours: t.opening_hours || null, phone: t.phone || t["contact:phone"] || null,
+          distanceKm: Math.round(haversine(near.lat, near.lng, lat, lng) * 10) / 10,
+        };
+      })
+      .filter(p => p && !seen.has(p.name + p.type) && seen.add(p.name + p.type))
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .slice(0, sp.maxResults);
+  });
+};
+
 exports.GeoError = GeoError;

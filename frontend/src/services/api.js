@@ -66,6 +66,11 @@ export const rideAPI = {
   cancel:    (rideId, reason) => api.put(`/rides/${rideId}/cancel`, { reason }).then(r => r.data),
   rate:      (rideId, data)   => api.post(`/rides/${rideId}/rate`, data).then(r => r.data),
   sos:       (rideId)     => api.post(`/rides/${rideId}/sos`).then(r => r.data),
+  // Safe points (real map locations) for an active ride
+  addSafePoint:     (rideId, point)   => api.post(`/rides/${rideId}/safe-points`, point).then(r => r.data),
+  removeSafePoint:  (rideId, pointId) => api.delete(`/rides/${rideId}/safe-points/${pointId}`).then(r => r.data),
+  requestSafePoint: (rideId, pointId) => api.post(`/rides/${rideId}/safe-points/${pointId}/request`, null, { timeout: 30000 }).then(r => r.data),
+  ackSafePoint:     (rideId)          => api.put(`/rides/${rideId}/safe-point-ack`).then(r => r.data),
   getById:   (rideId)     => api.get(`/rides/${rideId}`).then(r => r.data),
   getMyRides:(as)         => api.get('/rides/my-rides', { params: as ? { as } : {} }).then(r => r.data),
   // NEW: real-time fare update
@@ -87,4 +92,16 @@ export const geoAPI = {
   }).then(r => r.data),
   reverse: ({ latitude, longitude }) =>
     api.get('/geo/reverse', { params: { lat: latitude, lng: longitude }, timeout: 20000 }).then(r => r.data),
+  // Police stations, hospitals and busy public places near a point (OpenStreetMap)
+  safePlaces: ({ latitude, longitude }, type) =>
+    api.get('/geo/safe-places', { params: { lat: latitude, lng: longitude, ...(type ? { type } : {}) }, timeout: 45000 }).then(r => r.data),
+};
+
+// ── Emergency (SOS) sessions ────────────────────────────────────────────────
+// coordinates are [lng, lat]
+export const emergencyAPI = {
+  start:    (data)              => api.post('/emergency', data, { timeout: 20000 }).then(r => r.data),
+  active:   ()                  => api.get('/emergency/active').then(r => r.data),
+  location: (id, coordinates, accuracy) => api.post(`/emergency/${id}/location`, { coordinates, accuracy }).then(r => r.data),
+  resolve:  (id, note)          => api.put(`/emergency/${id}/resolve`, { note }).then(r => r.data),
 };

@@ -359,9 +359,19 @@ exports.updateProfile = async (req, res) => {
       if (!Array.isArray(guardianContacts)) {
         return res.status(400).json({ success: false, message: "guardianContacts must be a list" });
       }
-      updates.guardianContacts = guardianContacts.map(c => ({
-        name: c.name, phone: c.phone, isActive: c.isActive === true,
-      }));
+      if (guardianContacts.length > 5) {
+        return res.status(400).json({ success: false, message: "You can save up to 5 emergency contacts" });
+      }
+      const cleaned = [];
+      for (const c of guardianContacts) {
+        const name = String(c?.name || "").trim().slice(0, 60);
+        const phone = normalizePhone(c?.phone);
+        if (!name || !phone) {
+          return res.status(400).json({ success: false, message: `Each contact needs a name and a valid Pakistani mobile number${name ? ` (check ${name})` : ""}.` });
+        }
+        cleaned.push({ name, phone, relation: String(c?.relation || "").trim().slice(0, 30), isActive: c.isActive === true });
+      }
+      updates.guardianContacts = cleaned;
     }
 
     const updatedUser = await User.findByIdAndUpdate(

@@ -4,6 +4,7 @@ const {
   bookRide, estimateRide, acceptRide, declineRide, driverArrived, verifyOTP,
   completeRide, cancelRide, submitRating,
   getMyRides, getRideById, activateSOS, getLiveFare,
+  addSafePoint, removeSafePoint, requestSafePoint, acknowledgeSafePoint,
 } = require('../controllers/rideController');
 const { protect } = require('../middleware/auth');
 
@@ -22,5 +23,9 @@ router.put('/:id/cancel',         cancelRide);
 router.post('/:id/rate',          submitRating);
 router.post('/:id/sos',           activateSOS);
 router.get('/:id/live-fare',      getLiveFare);   // NEW: real-time fare
+router.post('/:id/safe-points',                     addSafePoint);
+router.delete('/:id/safe-points/:pointId',          removeSafePoint);
+router.post('/:id/safe-points/:pointId/request',    requestSafePoint);
+router.put('/:id/safe-point-ack',                   acknowledgeSafePoint);
 
 module.exports = router;

@@ -73,6 +73,7 @@ const UserSchema = new mongoose.Schema(
       {
         name:     { type: String },
         phone:    { type: String },
+        relation: { type: String, default: "" },   // Mother, Father, Sister, Friend…
         isActive: { type: Boolean, default: false },
       },
     ],
