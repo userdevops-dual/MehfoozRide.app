@@ -17,6 +17,7 @@ const routeMonitor = require("../services/routeMonitor");
 const emergency = require("../services/emergency");
 const { driverVerification } = require("../services/verification");
 const realtime = require("../services/realtime");
+const ratings  = require("../services/ratings");
 const { FARE, soloFare, poolEstimateFor, billableDistance, trackDistanceKm, validRideType } = require("../services/fare");
 const { fromLngLat, inServiceArea } = require("../utils/geoValidation");
 
@@ -468,6 +469,12 @@ exports.verifyOTP = async (req, res) => {
 //  complete enough, otherwise the planned route) + actual duration.
 //  Pooled passengers keep the pool discount ratio agreed when the pool formed.
 // ════════════════════════════════════════
+// Payable → platform commission + driver earning (config/fare.js commissionRate)
+const settle = (payable) => {
+  const commission = Math.round(payable * FARE.commissionRate);
+  return { payable, commissionRate: FARE.commissionRate, commission, driverEarning: payable - commission, method: "cash", status: "due" };
+};
+
 exports.completeRide = async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.id);
@@ -504,6 +511,7 @@ exports.completeRide = async (req, res) => {
         actualFare:       payable,
         farePerPassenger: payable,
         fareBreakdown:    breakdown(finalSolo, discount),
+        settlement:       settle(payable),
       },
       { new: true }
     );
@@ -548,6 +556,7 @@ exports.completeRide = async (req, res) => {
         plannedDistanceKm: ride.distanceKm,
         isPooled:         !!ride.pool,
         status:           done.status,
+        settlement:       done.settlement,
       },
       guardianNotified: activeGuardians.length > 0,
     });
@@ -575,6 +584,7 @@ exports.cancelRide = async (req, res) => {
     const wasRequested = ride.status === "requested";
     ride.status       = "cancelled";
     ride.cancelReason = `${byDriver ? "Driver" : "Passenger"}: ${reason || "No reason given"}`;
+    ride.cancelledBy  = req.user.id;
     ride.cancelledAt  = Date.now();
     await ride.save();
 
@@ -598,44 +608,52 @@ const isStar = (n) => Number.isInteger(n) && n >= 1 && n <= 5;
 
 exports.submitRating = async (req, res) => {
   try {
-    const { stars, categoryRatings, comment, hasComplaint, complaintType, complaintDetails } = req.body;
+    const { stars, categoryRatings, comment, tags, hasComplaint, complaintType, complaintDetails } = req.body;
     if (!isStar(stars)) {
       return res.status(400).json({ success: false, message: "Stars must be a whole number from 1 to 5" });
     }
-
     const ride = await Ride.findById(req.params.id);
     if (!ride || !isPassenger(ride, req.user)) return res.status(404).json({ success: false, message: "Ride not found" });
     if (ride.status !== "completed") return res.status(400).json({ success: false, message: "Ride must be completed before rating" });
     if (ride.rating) return res.status(400).json({ success: false, message: "You have already rated this ride" });
 
-    // Keep only valid 1–5 category scores
     const categories = {};
-    CATEGORY_KEYS.forEach(k => {
-      if (isStar(categoryRatings?.[k])) categories[k] = categoryRatings[k];
-    });
+    CATEGORY_KEYS.forEach(k => { if (isStar(categoryRatings?.[k])) categories[k] = categoryRatings[k]; });
+    const cleanTags = [...new Set((Array.isArray(tags) ? tags : []).filter(x => ratings.ALL_TAGS.includes(x)))];
+    const complaint = hasComplaint === true;
+    const COMPLAINT_TYPES = Rating.schema.path("complaintType").enumValues;
+    if (complaint && !COMPLAINT_TYPES.includes(complaintType)) {
+      return res.status(400).json({ success: false, message: "Choose what the complaint is about" });
+    }
 
-    const rating = await Rating.create({
+    const rating = new Rating({
       ride: ride._id, ratedBy: req.user.id, ratedUser: ride.driver,
-      stars, categoryRatings: categories,
-      comment: comment || "", hasComplaint: hasComplaint === true,
-      complaintType: complaintType || "", complaintDetails: complaintDetails || "",
+      stars, categoryRatings: categories, tags: cleanTags,
+      comment: String(comment || "").slice(0, 500),
+      hasComplaint: complaint,
+      complaintType: complaint ? complaintType : "",
+      complaintDetails: complaint ? String(complaintDetails || "").slice(0, 1000) : "",
     });
-    ride.rating = rating._id;
-    await ride.save();
+    // Claim the ride first — two quick taps can't create two ratings
+    const claimed = await Ride.findOneAndUpdate({ _id: ride._id, rating: null }, { rating: rating._id });
+    if (!claimed) return res.status(400).json({ success: false, message: "You have already rated this ride" });
+    try { await rating.save(); }
+    catch (e) { await Ride.updateOne({ _id: ride._id }, { rating: null }); throw e; }
 
-    const driver = await User.findById(ride.driver);
-    await driver.updateRating(stars);
-
-    if (driver.averageRating < 2 && driver.totalRatings >= 5) {
-      driver.isSuspended   = true;
-      driver.suspendReason = "Average rating dropped below 2.0 — under review";
-      await driver.save();
+    // Driver's rating is recalculated from every stored rating
+    const summary = await ratings.recalcDriverRating(ride.driver);
+    if (summary.averageRating < 2 && summary.totalRatings >= 5) {
+      await User.updateOne({ _id: ride.driver }, { isSuspended: true, suspendReason: "Average rating dropped below 2.0 — under admin review" });
+    }
+    if (complaint) {
+      realtime.toAdmins("admin:complaint", { rideId: ride._id, ratingId: rating._id, complaintType, stars });
     }
 
     res.status(201).json({
       success: true,
-      message: "Rating submitted. Thank you! 🌸",
-      rating: { stars, driverNewRating: driver.averageRating.toFixed(1) },
+      message: "Thank you for your feedback 🌸",
+      rating: { _id: rating._id, stars, tags: cleanTags, categoryRatings: categories, hasComplaint: complaint },
+      driverRating: { average: summary.averageRating, count: summary.totalRatings },
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -643,25 +661,95 @@ exports.submitRating = async (req, res) => {
 };
 
 // ════════════════════════════════════════
+//  @route  PUT /api/rides/:id/payment      (driver)  { status: "collected" | "disputed", note? }
+//  Cash settlement: the driver confirms she received the payable amount.
+// ════════════════════════════════════════
+exports.confirmPayment = async (req, res) => {
+  try {
+    const { status, note } = req.body || {};
+    if (!["collected", "disputed"].includes(status)) {
+      return res.status(400).json({ success: false, message: "status must be 'collected' or 'disputed'" });
+    }
+    const ride = await Ride.findOneAndUpdate(
+      { _id: req.params.id, driver: req.user.id, status: "completed", "settlement.status": "due" },
+      { "settlement.status": status, "settlement.collectedAt": status === "collected" ? new Date() : undefined,
+        "settlement.disputeNote": status === "disputed" ? String(note || "").slice(0, 300) : undefined },
+      { new: true }
+    );
+    if (!ride) return res.status(400).json({ success: false, message: "No payment due on this ride" });
+    realtime.toUser(ride.passenger, "ride:payment-updated", { rideId: ride._id, status });
+    if (status === "disputed") realtime.toAdmins("admin:payment-dispute", { rideId: ride._id, note });
+    res.json({ success: true, settlement: ride.settlement });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+// ════════════════════════════════════════
 //  @route  GET /api/rides/my-rides
+// ════════════════════════════════════════
+// One history row — only what each side should see
+const historyRow = (r, asDriver) => ({
+  _id: r._id,
+  date: r.completedAt || r.cancelledAt || r.createdAt,
+  status: r.status,
+  pickup: r.pickupLocation?.address,
+  dropoff: r.dropoffLocation?.address,
+  distanceKm: r.billedDistanceKm || r.distanceKm,
+  distanceSource: r.distanceSource,
+  durationMinutes: r.durationMinutes || null,
+  fare: r.status === "completed" ? r.farePerPassenger : null,
+  estimatedFare: r.estimatedFare || r.farePerPassenger,
+  isPooled: !!r.pool,
+  rideType: r.rideType,
+  cancelReason: r.status === "cancelled" ? r.cancelReason : undefined,
+  routeDeviated: !!r.routeDeviated,
+  sosActivated: !!r.sosActivated,
+  rating: r.rating ? { stars: r.rating.stars, tags: r.rating.tags, comment: asDriver ? undefined : r.rating.comment } : null,
+  settlement: r.settlement?.payable != null
+    ? (asDriver ? r.settlement : { payable: r.settlement.payable, method: r.settlement.method, status: r.settlement.status })
+    : null,
+  driver: !asDriver && r.driver ? {
+    name: r.driver.name,
+    vehicle: `${r.driver.driverDetails?.vehicleMake || ""} ${r.driver.driverDetails?.vehicleModel || ""}`.trim(),
+    vehicleColor: r.driver.driverDetails?.vehicleColor || "",
+    licensePlate: r.driver.driverDetails?.licensePlate || "",
+  } : undefined,
+  passenger: asDriver && r.passenger ? { name: r.passenger.name } : undefined,
+});
+
+// ════════════════════════════════════════
+//  @route  GET /api/rides/my-rides?status=completed|cancelled|active&page=1&limit=20&as=passenger
 // ════════════════════════════════════════
 exports.getMyRides = async (req, res) => {
   try {
     // ?as=passenger lets a driver see the rides she took as a passenger
     const asDriver = req.user.role === "driver" && req.query.as !== "passenger";
     const query = asDriver ? { driver: req.user.id } : { passenger: req.user.id };
-    const rides = await Ride.find(query)
-      .select("-routeCoordinates -preferredRoute.coordinates")
-      .populate("driver",    "name averageRating driverDetails")
-      .populate("passenger", "name phone")
-      .populate("rating")
-      .sort({ createdAt: -1 });
-    res.status(200).json({ success: true, count: rides.length, rides });
+    const status = String(req.query.status || "");
+    if (status === "completed" || status === "cancelled") query.status = status;
+    else if (status === "active") query.status = { $in: ACTIVE_STATUSES };
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 20));
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+
+    const [rides, total] = await Promise.all([
+      Ride.find(query)
+        .select("-routeCoordinates -preferredRoute.coordinates -routeDeviations -safePoints")
+        .populate("driver", "name driverDetails.vehicleMake driverDetails.vehicleModel driverDetails.vehicleColor driverDetails.licensePlate")
+        .populate("passenger", "name")
+        .populate("rating", "stars tags comment")
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * limit).limit(limit),
+      Ride.countDocuments(query),
+    ]);
+    res.status(200).json({
+      success: true, page, limit, total, pages: Math.ceil(total / limit),
+      count: rides.length,
+      rides: rides.map(r => historyRow(r, asDriver)),
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
-
 // ════════════════════════════════════════
 //  @route  GET /api/rides/:id
 //  Participants and admins only. OTP and guardian contacts are included for

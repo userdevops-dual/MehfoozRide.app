@@ -72,7 +72,9 @@ export const rideAPI = {
   requestSafePoint: (rideId, pointId) => api.post(`/rides/${rideId}/safe-points/${pointId}/request`, null, { timeout: 30000 }).then(r => r.data),
   ackSafePoint:     (rideId)          => api.put(`/rides/${rideId}/safe-point-ack`).then(r => r.data),
   getById:   (rideId)     => api.get(`/rides/${rideId}`).then(r => r.data),
-  getMyRides:(as)         => api.get('/rides/my-rides', { params: as ? { as } : {} }).then(r => r.data),
+  // { as?: 'passenger', status?: 'completed'|'cancelled'|'active', page?, limit? }
+  getMyRides:(params = {}) => api.get('/rides/my-rides', { params: typeof params === 'string' ? { as: params } : params }).then(r => r.data),
+  confirmPayment: (rideId, status, note) => api.put(`/rides/${rideId}/payment`, { status, note }).then(r => r.data),
   // NEW: real-time fare update
   getLiveFare:(rideId, distanceKm) => api.get(`/rides/${rideId}/live-fare`, { params: { distanceKm } }).then(r => r.data),
 };

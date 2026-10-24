@@ -46,6 +46,8 @@ const RatingSchema = new mongoose.Schema(
     },
 
     // ── Written Comment ──────────────────────
+    // Behaviour / safety feedback chosen from a fixed list (services/ratings.js)
+    tags: { type: [String], default: [] },
     comment: {
       type: String,
       trim: true,

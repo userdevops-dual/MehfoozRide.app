@@ -1,5 +1,5 @@
 // frontend/src/screens/shared/ProfileScreen.js
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   TextInput, Alert, Switch, ActivityIndicator,
@@ -12,6 +12,12 @@ import { passwordRules } from '../../utils/validation';
 
 export default function ProfileScreen({ navigation }) {
   const { user, logout, updateUser, mode, setMode } = useAuth();
+
+  // Rating, ride count etc. are refreshed from the server — the saved login copy can be old
+  useEffect(() => {
+    const off = navigation.addListener('focus', () => authAPI.getMe().then(r => r.user && updateUser(r.user)).catch(() => {}));
+    return off;
+  }, []);
 
   const [editing,     setEditing]     = useState(false);
   const [name,        setName]        = useState(user?.name        || '');
@@ -95,12 +101,12 @@ export default function ProfileScreen({ navigation }) {
           </View>
         </View>
         <Text style={s.headerName}>{user?.name || 'User'}</Text>
-        <Text style={s.headerRole}>{isDriver ? '🚗 Verified Driver' : '🧳 Passenger'}</Text>
+        <Text style={s.headerRole}>{isDriver ? (user?.isVerified ? '🚗 Driver · approved' : '🚗 Driver · verification pending') : '🧳 Passenger'}</Text>
         <View style={s.statsRow}>
           {[
             { lbl: 'Rides',  val: user?.totalRides   || 0 },
-            { lbl: 'Rating', val: `${(user?.averageRating || 4.9).toFixed(1)} ⭐` },
-            { lbl: 'Since',  val: user?.createdAt ? new Date(user.createdAt).getFullYear() : '2024' },
+            { lbl: 'Rating', val: user?.totalRatings ? `${Number(user.averageRating).toFixed(1)} ⭐` : 'New' },
+            { lbl: 'Since',  val: user?.createdAt ? new Date(user.createdAt).getFullYear() : '—' },
           ].map(item => (
             <View key={item.lbl} style={s.statBox}>
               <Text style={s.statVal}>{item.val}</Text>

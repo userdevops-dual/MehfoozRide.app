@@ -17,19 +17,25 @@ export default function DriverHomeScreen({navigation}) {
   const [statusKnown,  setStatusKnown]  = useState(false);
   const [gpsError,     setGpsError]     = useState(null);
   const [verification, setVerification] = useState(null);   // from the server
+  const [stats,        setStats]        = useState(null);   // rides, earnings, rating — from the server
   const [tab,          setTab]          = useState('home');
   const locationIntervalRef = useRef(null);
 
   // The server is the source of truth for online/offline
   useEffect(() => {
     driverAPI.getStats()
-      .then(res => { setIsOnline(!!res.stats?.isOnline); setVerification(res.stats?.verification || null); })
+      .then(res => { setIsOnline(!!res.stats?.isOnline); setVerification(res.stats?.verification || null); setStats(res.stats); })
       .catch(() => {})
       .finally(() => setStatusKnown(true));
     // e.g. after a reconnect, or if the server took the driver offline
     const offStatus = onDriverStatus(({isOnline: online}) => setIsOnline(!!online));
     return () => offStatus && offStatus();
   }, []);
+
+  // Fresh numbers whenever she comes back here (e.g. after finishing a ride)
+  useEffect(() => navigation.addListener('focus', () => {
+    driverAPI.getStats().then(res => { setStats(res.stats); setVerification(res.stats?.verification || null); }).catch(() => {});
+  }), []);
 
   // Incoming ride requests (sent by the server to nearby drivers).
   // Only open a request while this screen is showing — never mid-ride.
@@ -110,9 +116,9 @@ export default function DriverHomeScreen({navigation}) {
           {/* Stats Row */}
           <View style={styles.statsRow}>
             {[
-              {lbl:'Rating',  val: user?.totalRatings ? `${user.averageRating.toFixed(1)} ⭐` : 'New'},
-              {lbl:'Rides',   val: user?.totalRides   || 0},
-              {lbl:'Balance', val:`Rs.${(user?.totalEarnings||0).toLocaleString()}`},
+              {lbl:'Rating',  val: !stats ? '…' : stats.totalRatings ? `${Number(stats.averageRating).toFixed(1)} ⭐` : 'New'},
+              {lbl:'Rides',   val: stats ? stats.totalRides : '…'},
+              {lbl:'Today',   val: stats ? `Rs.${Math.round(stats.todayEarnings).toLocaleString()}` : '…'},
             ].map(s => (
               <View key={s.lbl} style={styles.statBox}>
                 <Text style={styles.statVal}>{s.val}</Text>

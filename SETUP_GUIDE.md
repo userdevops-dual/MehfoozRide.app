@@ -146,6 +146,13 @@ Admin panel: driver approvals, background checks, SOS incidents, fake rides, liv
 - **Honest demo mode** — `DEMO_MODE=true` (default): contact SMS are logged on the server and shown as "Demo — not actually sent"; police dispatch is "simulated / not integrated". For real SMS set `NOTIFY_PROVIDER=twilio` with `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM`; a police system can be connected later with `POLICE_API_URL`. Set `PUBLIC_BASE_URL` so live links work from contacts' phones.
 - **Emergency contacts** — up to 5, with relation; phone numbers validated on the server.
 
+### Completion, settlement, ratings, history, statistics (Phase 6)
+
+- **Completion** — the driver ends each passenger's ride; the server calculates the final distance (GPS track when plausible), duration and fare (pooled share kept), and stores a **settlement**: payable, 15 % commission (`config/fare.js`), driver earning. Payment is **cash**: the driver taps *Cash received* (or *Not paid*, which alerts admins). There is no in-app wallet or top-up in this version.
+- **Rating** — overall stars, 5 categories, behaviour feedback tags, comment, optional safety complaint (sent to admins). One rating per ride, enforced atomically. The driver's rating, category averages and tag counts are always recalculated from the stored ratings; new drivers show **New**.
+- **History** — `GET /api/rides/my-rides?status=&page=&limit=`: date, pickup, destination, driver & vehicle (or passenger name for drivers), fare, distance, duration, status, rating and payment. Drivers see their commission and earning; passengers never see driver documents; drivers never see passenger phone numbers or comments.
+- **Driver statistics** — `GET /api/driver/stats`: earnings after commission (today, last 7 days, month, total), 7-day chart, cash still to collect, rides, distance, time, pooled rides, acceptance rate, cancellations, rating with categories and recent reviews — all computed from real rides.
+
 After pulling Phase 5, rebuild the app once (`npx expo run:android`) — it adds `expo-speech` and `expo-audio`.
 
 ---

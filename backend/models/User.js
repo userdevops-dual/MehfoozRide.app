@@ -67,6 +67,12 @@ const UserSchema = new mongoose.Schema(
     averageRating: { type: Number, default: 0, min: 0, max: 5 },
     totalRides:    { type: Number, default: 0 },
     totalRatings:  { type: Number, default: 0 },
+    // Recalculated from all ratings (services/ratings.js): per-category averages + tag counts
+    ratingSummary: {
+      categories: { type: Map, of: Number, default: {} },
+      tags:       { type: Map, of: Number, default: {} },
+      updatedAt:  { type: Date },
+    },
 
     // ── Guardian contacts (auto-notified on ride start) ──────────────────
     guardianContacts: [

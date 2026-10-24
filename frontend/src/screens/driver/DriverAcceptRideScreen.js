@@ -272,6 +272,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
               billedKm: res.ride?.distanceKm,
               distanceSource: res.ride?.distanceSource,
               minutes: res.ride?.durationMinutes,
+              settlement: res.ride?.settlement,
             });
             emitRideCompleted(stop.rideId);
           } catch (err) {
@@ -306,6 +307,13 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
   if (phase === 'done') {
     const completed = stops.filter(s => s.status === 'completed');
     const total = completed.reduce((n, s) => n + (s.finalFare || 0), 0);
+    const earned = completed.reduce((n, s) => n + (s.settlement?.driverEarning ?? s.finalFare ?? 0), 0);
+    const collect = async (s, status) => {
+      try {
+        const res = await rideAPI.confirmPayment(s.rideId, status);
+        updateStop(s.rideId, { settlement: res.settlement });
+      } catch (e) { Alert.alert('Not saved', errorMessage(e)); }
+    };
     return (
       <LinearGradient colors={GRAD.success} style={styles.doneScreen}>
         <Text style={{ fontSize: 80, marginBottom: 16 }}>🌸</Text>
@@ -315,14 +323,28 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
           {stops.map(s => (
             <View key={s.rideId} style={styles.doneRow}>
               <Text style={styles.doneLbl} numberOfLines={1}>{s.passengerName}{s.status === 'cancelled' ? ' (cancelled)' : ''}</Text>
-              <Text style={styles.doneVal}>
-                {s.status === 'completed' ? `Rs ${s.finalFare} · ${s.billedKm} km${s.distanceSource === 'gps' ? ' (GPS)' : ''}` : '—'}
-              </Text>
+              <View style={{ alignItems: 'flex-end' }}>
+                <Text style={styles.doneVal}>
+                  {s.status === 'completed' ? `Rs ${s.finalFare} · ${s.billedKm} km${s.distanceSource === 'gps' ? ' (GPS)' : ''}` : '—'}
+                </Text>
+                {s.status === 'completed' && s.settlement?.status === 'due' && (
+                  <View style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
+                    <TouchableOpacity onPress={() => collect(s, 'collected')} style={styles.cashBtn}><Text style={styles.cashBtnText}>💵 Cash received</Text></TouchableOpacity>
+                    <TouchableOpacity onPress={() => collect(s, 'disputed')} style={[styles.cashBtn, { backgroundColor: '#999' }]}><Text style={styles.cashBtnText}>Not paid</Text></TouchableOpacity>
+                  </View>
+                )}
+                {s.settlement?.status === 'collected' && <Text style={[styles.doneLbl, { fontSize: 11 }]}>✅ cash received</Text>}
+                {s.settlement?.status === 'disputed' && <Text style={[styles.doneLbl, { fontSize: 11 }]}>⚠️ reported as not paid</Text>}
+              </View>
             </View>
           ))}
           <View style={styles.doneRow}>
-            <Text style={styles.doneLbl}>Total fare collected</Text>
-            <Text style={[styles.doneVal, { fontSize: 20, fontWeight: '800' }]}>Rs {total}</Text>
+            <Text style={styles.doneLbl}>Passengers pay</Text>
+            <Text style={styles.doneVal}>Rs {total}</Text>
+          </View>
+          <View style={styles.doneRow}>
+            <Text style={styles.doneLbl}>Your earning (after commission)</Text>
+            <Text style={[styles.doneVal, { fontSize: 20, fontWeight: '800' }]}>Rs {earned}</Text>
           </View>
         </View>
         <TouchableOpacity onPress={() => navigation.replace('DriverHome')} style={styles.homeBtn}>
@@ -554,6 +576,8 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
+  cashBtn:      { backgroundColor: C.success, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 5 },
+  cashBtnText:  { color: '#fff', fontSize: 10, fontWeight: '800' },
   sosBtn:       { backgroundColor: '#E53935', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6, marginRight: 8 },
   sosText:      { color: '#fff', fontWeight: '900', fontSize: 12 },
   safeReq:      { backgroundColor: '#fff', margin: 14, marginBottom: 0, borderRadius: 16, padding: 14, borderWidth: 2, borderColor: C.success },

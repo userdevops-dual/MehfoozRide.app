@@ -85,6 +85,7 @@ const RideSchema = new mongoose.Schema(
       default: "requested",
     },
     cancelReason: { type: String, default: "" },
+    cancelledBy:  { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
     requestedAt:  { type: Date, default: Date.now },
     acceptedAt:   { type: Date },
@@ -139,6 +140,21 @@ const RideSchema = new mongoose.Schema(
     ],
 
     rating: { type: mongoose.Schema.Types.ObjectId, ref: "Rating", default: null },
+
+    // ── Fare settlement (set when the ride is completed) ─────────────────
+    // payable: what the passenger pays · commission: platform share ·
+    // driverEarning: payable − commission. Payment is cash in this version;
+    // the driver confirms she collected it.
+    settlement: {
+      payable:        { type: Number },
+      commissionRate: { type: Number },
+      commission:     { type: Number },
+      driverEarning:  { type: Number },
+      method:         { type: String, enum: ["cash"], default: "cash" },
+      status:         { type: String, enum: ["due", "collected", "disputed"] },
+      collectedAt:    { type: Date },
+      disputeNote:    { type: String },
+    },
   },
   { timestamps: true }
 );

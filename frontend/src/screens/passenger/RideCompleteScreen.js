@@ -1,21 +1,18 @@
 // src/screens/passenger/RideCompleteScreen.js
-// REQ 17: 5-category rating (Safety, Professionalism, Cleanliness, Punctuality, Respectful)
-// REQ 23: Both passenger AND driver confirm ride completion
-
-import React, { useState } from 'react';
-import {
-  View, Text, TouchableOpacity, TextInput,
-  ScrollView, StyleSheet, Alert, ActivityIndicator,
-} from 'react-native';
+// After the driver ends the ride: the final fare from the server (distance,
+// time, pooled discount), the amount payable and its payment status, then the
+// rating — overall stars, 5 categories, behaviour feedback, comment, complaint.
+import React, { useState, useEffect } from 'react';
+import { View, Text, TouchableOpacity, TextInput, ScrollView, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { rideAPI } from '../../services/api';
-import { PrimaryBtn } from '../../components/UI';
+import { onEvent } from '../../services/socket';
 import { C, GRAD } from '../../utils/theme';
 
 const StarRow = ({ rating, setRating, size = 28 }) => (
   <View style={{ flexDirection: 'row', gap: 8 }}>
     {[1, 2, 3, 4, 5].map(i => (
-      <TouchableOpacity key={i} onPress={() => setRating(i)}>
+      <TouchableOpacity key={i} onPress={() => setRating(i)} hitSlop={6}>
         <Text style={{ fontSize: size, color: i <= rating ? '#F4C430' : '#DDD' }}>★</Text>
       </TouchableOpacity>
     ))}
@@ -23,292 +20,210 @@ const StarRow = ({ rating, setRating, size = 28 }) => (
 );
 
 const CATEGORIES = [
-  { key: 'safety',          label: 'Safety',           icon: '🛡️' },
-  { key: 'professionalism', label: 'Professionalism',  icon: '💼' },
-  { key: 'cleanliness',     label: 'Cleanliness',      icon: '✨' },
-  { key: 'punctuality',     label: 'Punctuality',      icon: '⏰' },
-  { key: 'respectful',      label: 'Respectful Behavior', icon: '🤝' },
+  { key: 'safety',          label: 'Safety',          icon: '🛡️' },
+  { key: 'respectful',      label: 'Respectful',      icon: '🤝' },
+  { key: 'professionalism', label: 'Professionalism', icon: '💼' },
+  { key: 'punctuality',     label: 'Punctuality',     icon: '⏰' },
+  { key: 'cleanliness',     label: 'Cleanliness',     icon: '✨' },
 ];
-
-// value must match Rating.complaintType enum on the backend
+// Must match services/ratings.js TAGS on the server
+const TAGS = {
+  good: [['safe_driving', 'Safe driving'], ['followed_route', 'Followed my route'], ['polite', 'Polite'], ['respected_mood', 'Respected my mood'], ['clean_car', 'Clean car'], ['on_time', 'On time']],
+  bad:  [['unsafe_driving', 'Unsafe driving'], ['route_changed', 'Changed route'], ['rude', 'Rude'], ['ignored_mood', 'Ignored my mood'], ['phone_while_driving', 'Phone while driving'], ['dirty_car', 'Dirty car'], ['late', 'Late']],
+};
+// Must match Rating.complaintType on the server
 const COMPLAINT_TYPES = [
-  { value: 'harassment',          label: 'Harassment' },
-  { value: 'unsafe_driving',      label: 'Unsafe driving' },
-  { value: 'rude_behaviour',      label: 'Rude behavior' },
-  { value: 'wrong_route',         label: 'Route deviation' },
-  { value: 'wrong_vehicle',       label: 'Wrong vehicle' },
-  { value: 'refused_destination', label: 'Refused destination' },
-  { value: 'other',               label: 'Other' },
+  ['harassment', 'Harassment'], ['unsafe_driving', 'Unsafe driving'], ['rude_behaviour', 'Rude behaviour'],
+  ['wrong_route', 'Wrong route'], ['wrong_vehicle', 'Wrong vehicle / driver'], ['vehicle_condition', 'Vehicle condition'],
+  ['refused_destination', 'Refused destination'], ['other', 'Other'],
 ];
+const PAYMENT = { due: ['💵 Pay in cash', '#B07030'], collected: ['✅ Payment received', C.success], disputed: ['⚠️ Payment disputed', C.danger] };
 
 export default function RideCompleteScreen({ navigation, route }) {
-  const { ride, driver, rideTime } = route.params || {};
-  const fmt = s => `${Math.floor((s || 920) / 60).toString().padStart(2, '0')}:${((s || 920) % 60).toString().padStart(2, '0')}`;
-
-  // ── Passenger confirmation state ─────────────────────────────────────────
-  const [passengerConfirmed, setPassengerConfirmed] = useState(false);
-  const [confirmLoading,     setConfirmLoading]     = useState(false);
-
-  // ── Rating state ─────────────────────────────────────────────────────────
-  const [categoryRatings, setCategoryRatings] = useState({
-    safety: 0, professionalism: 0, cleanliness: 0, punctuality: 0, respectful: 0,
-  });
-  const [comment,   setComment]   = useState('');
+  const { ride: passed, driver: passedDriver } = route.params || {};
+  const [ride,     setRide]     = useState(null);
+  const [loadErr,  setLoadErr]  = useState(null);
+  const [stars,    setStars]    = useState(0);
+  const [cats,     setCats]     = useState({});
+  const [tags,     setTags]     = useState([]);
+  const [comment,  setComment]  = useState('');
   const [complaint, setComplaint] = useState(false);
   const [complaintType, setComplaintType] = useState('');
-  const [loading,   setLoading]   = useState(false);
-  const [done,      setDone]      = useState(false);
+  const [details,  setDetails]  = useState('');
+  const [sending,  setSending]  = useState(false);
+  const [rated,    setRated]    = useState(null);
 
-  const overallStars = Math.round(
-    Object.values(categoryRatings).reduce((a, b) => a + b, 0) /
-    Math.max(Object.values(categoryRatings).filter(v => v > 0).length, 1)
-  ) || 0;
+  // The completed ride is always read from the server
+  const load = () => rideAPI.getById(passed?._id)
+    .then(r => { setRide(r.ride); if (r.ride?.rating) setRated(r.ride.rating); })
+    .catch(e => setLoadErr(e.response?.data?.message || 'Could not load the ride. Check your connection.'));
+  useEffect(() => {
+    load();
+    const off = onEvent('ride:payment-updated', d => { if (String(d?.rideId) === String(passed?._id)) load(); });
+    return () => off && off();
+  }, []);
 
-  const allRated = Object.values(categoryRatings).every(v => v > 0);
+  const toggleTag = (t) => setTags(x => x.includes(t) ? x.filter(y => y !== t) : [...x, t]);
 
-  // ── Step 1: Passenger confirms arrival ───────────────────────────────────
-  const handlePassengerConfirm = async () => {
-    setConfirmLoading(true);
-    await new Promise(r => setTimeout(r, 800)); // simulate API
-    setPassengerConfirmed(true);
-    setConfirmLoading(false);
-    Alert.alert('✅ Arrival Confirmed', 'Great! Please rate your driver now.');
-  };
-
-  // ── Step 2: Submit rating ─────────────────────────────────────────────────
   const submit = async () => {
-    if (!allRated) {
-      Alert.alert('Rate All Categories', 'Please rate all 5 categories before submitting.'); return;
-    }
-    if (complaint && !complaintType) {
-      Alert.alert('Complaint Type', 'Please choose what the complaint is about.'); return;
-    }
-    setLoading(true);
+    if (!stars) { Alert.alert('Rate your ride', 'Tap the stars to give an overall rating.'); return; }
+    if (complaint && !complaintType) { Alert.alert('Complaint', 'Please choose what the complaint is about.'); return; }
+    setSending(true);
     try {
-      await rideAPI.rate(ride?._id, {
-        stars:           overallStars,
-        categoryRatings,
-        comment,
-        hasComplaint:    complaint,
-        complaintType:   complaint ? complaintType : '',
+      const res = await rideAPI.rate(ride._id, {
+        stars, categoryRatings: cats, tags, comment,
+        hasComplaint: complaint, complaintType, complaintDetails: details,
       });
-      setDone(true);
-    } catch (err) {
-      Alert.alert('Not Submitted', `${err.response?.data?.message || 'Server error.'}\n\nYour rating${complaint ? ' and complaint were' : ' was'} not saved. Please try again.`);
+      setRated(res.rating);
+    } catch (e) {
+      Alert.alert('Not submitted', e.response?.data?.message || 'Could not reach the server. Try again.');
     }
-    setLoading(false);
+    setSending(false);
   };
 
-  // ── Done screen ───────────────────────────────────────────────────────────
-  if (done) return (
-    <View style={styles.doneScreen}>
-      <Text style={{ fontSize: 90 }}>🌸</Text>
-      <Text style={styles.doneTitle}>Thank You!</Text>
-      <Text style={styles.doneSub}>Your feedback keeps our sisterhood safe & strong!</Text>
-      <View style={styles.doneCard}>
-        <Text style={{ fontSize: 40, marginBottom: 8 }}>⭐</Text>
-        <Text style={{ fontSize: 14, fontWeight: '700', color: C.rose }}>
-          Overall Rating: {overallStars}/5
-        </Text>
-        <Text style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
-          Thank you for helping make MehfoozRide safer!
-        </Text>
+  if (!ride) {
+    return (
+      <View style={[styles.screen, { justifyContent: 'center', alignItems: 'center', padding: 24 }]}>
+        {loadErr ? (
+          <>
+            <Text style={{ color: C.text, textAlign: 'center', marginBottom: 12 }}>{loadErr}</Text>
+            <TouchableOpacity onPress={() => { setLoadErr(null); load(); }}><Text style={{ color: C.rose, fontWeight: '700' }}>Try again</Text></TouchableOpacity>
+          </>
+        ) : <ActivityIndicator color={C.rose} size="large" />}
       </View>
-      <PrimaryBtn title="Back to Home 🏠" onPress={() => navigation.replace('PassengerHome')} style={{ width: '100%' }} />
-    </View>
-  );
+    );
+  }
+
+  const b = ride.fareBreakdown || {};
+  const s = ride.settlement || {};
+  const driver = ride.driver || passedDriver || {};
+  const pay = PAYMENT[s.status] || PAYMENT.due;
+  const km = ride.billedDistanceKm || ride.distanceKm;
+  const total = s.payable ?? ride.farePerPassenger;
+  // ride-type surcharge or minimum fare: whatever makes the rows add up to the total
+  const adjust = Math.round(total + (b.discount || 0) - (b.baseFare || 0) - (b.distanceFare || 0) - (b.timeFare || 0));
 
   return (
-    <ScrollView style={styles.screen} showsVerticalScrollIndicator={false}>
-
-      {/* Header */}
-      <LinearGradient colors={GRAD.success} style={styles.banner}>
-        <Text style={{ fontSize: 62, marginBottom: 12 }}>✅</Text>
-        <Text style={styles.bannerTitle}>You Arrived Safely!</Text>
-        <Text style={styles.bannerSub}>Journey complete · {fmt(rideTime)}</Text>
+    <View style={styles.screen}>
+      <LinearGradient colors={GRAD.primary} style={styles.header}>
+        <Text style={{ fontSize: 44 }}>🏁</Text>
+        <Text style={styles.title}>You've arrived safely</Text>
+        <Text style={styles.sub}>{ride.dropoffLocation?.address}</Text>
       </LinearGradient>
 
-      <View style={{ padding: 16, gap: 14 }}>
-
-        {/* Fare Summary */}
-        <View style={styles.fareCard}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <View>
-              <Text style={styles.fareLabel}>Total Fare Paid</Text>
-              <Text style={styles.fareAmt}>Rs. {ride?.actualFare || ride?.estimatedFare || 280}</Text>
-            </View>
-            <View style={{ alignItems: 'flex-end' }}>
-              <Text style={styles.fareLabel}>Distance</Text>
-              <Text style={styles.fareDist}>{ride?.distanceKm || 7.2} km</Text>
-            </View>
-          </View>
-          {(ride?.isPooled ?? false) && (
-            <View style={styles.poolBadge}>
-              <Text style={{ fontSize: 11, color: C.rose, fontWeight: '700' }}>
-                👯‍♀️ Pool Ride — You paid Rs. {ride?.farePerPassenger || Math.ceil((ride?.actualFare || ride?.estimatedFare || 280) / 2)} (50% split)
-              </Text>
-            </View>
-          )}
+      <ScrollView contentContainerStyle={{ padding: 16, gap: 14 }}>
+        {/* Amount payable + payment status */}
+        <View style={styles.card}>
+          <Text style={styles.label}>AMOUNT PAYABLE</Text>
+          <Text style={styles.amount}>Rs {s.payable ?? ride.farePerPassenger}</Text>
+          <Text style={[styles.payStatus, { color: pay[1] }]}>{pay[0]}{s.status === 'due' ? ` to ${driver.name || 'your driver'}` : ''}</Text>
+          <View style={styles.divider} />
+          <Row k="Distance" v={`${km} km ${ride.distanceSource === 'gps' ? '(measured by GPS)' : '(planned route)'}`} />
+          <Row k="Time" v={`${ride.durationMinutes || 0} min`} />
+          <Row k="Base fare" v={`Rs ${b.baseFare ?? 0}`} />
+          <Row k="Distance fare" v={`Rs ${b.distanceFare ?? 0}`} />
+          <Row k="Time fare" v={`Rs ${b.timeFare ?? 0}`} />
+          {!!adjust && <Row k="Ride type / minimum fare" v={`${adjust > 0 ? '+' : '−'} Rs ${Math.abs(adjust)}`} />}
+          {!!b.discount && <Row k="Pooled ride discount" v={`− Rs ${b.discount}`} color={C.success} />}
+          <Row k="Total" v={`Rs ${s.payable ?? ride.farePerPassenger}`} bold />
         </View>
 
-        {/* ── REQ 23: PASSENGER CONFIRMS ARRIVAL ─────────────────────────────── */}
-        <View style={[styles.confirmCard, passengerConfirmed && styles.confirmCardDone]}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-            <Text style={{ fontSize: 24 }}>{passengerConfirmed ? '✅' : '📍'}</Text>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.confirmTitle}>
-                {passengerConfirmed ? 'Arrival Confirmed ✓' : 'Confirm You Have Arrived'}
-              </Text>
-              <Text style={styles.confirmSub}>
-                {passengerConfirmed
-                  ? `Confirmed at ${new Date().toLocaleTimeString()}`
-                  : 'Both you and your driver must confirm ride completion'}
-              </Text>
-            </View>
-          </View>
-          {!passengerConfirmed && (
-            <TouchableOpacity onPress={handlePassengerConfirm} style={styles.confirmBtn} disabled={confirmLoading}>
-              {confirmLoading
-                ? <ActivityIndicator color="#fff" />
-                : <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14 }}>📍 I Have Arrived at My Destination</Text>
-              }
-            </TouchableOpacity>
-          )}
-          {passengerConfirmed && (
-            <View style={styles.driverConfirmNote}>
-              <Text style={{ fontSize: 12, color: '#1A5C2A', fontWeight: '600' }}>
-                ✅ Your confirmation received{'\n'}
-                🚗 Driver will also confirm on their screen
-              </Text>
-            </View>
-          )}
+        <View style={styles.card}>
+          <Text style={styles.label}>YOUR DRIVER</Text>
+          <Text style={styles.driverName}>👩 {driver.name}</Text>
+          <Text style={styles.small}>
+            {[driver.driverDetails?.vehicleMake, driver.driverDetails?.vehicleModel].filter(Boolean).join(' ')} · {driver.driverDetails?.licensePlate}
+          </Text>
         </View>
 
-        {/* ── REQ 17: 5-CATEGORY RATING ───────────────────────────────────────── */}
-        {passengerConfirmed && (
-          <>
-            <View style={styles.ratingHeader}>
-              <View style={styles.driverThumb}><Text style={{ fontSize: 26 }}>👩</Text></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.ratingTitle}>Rate {driver?.name || 'Your Driver'}</Text>
-                <Text style={styles.ratingSub}>Rate all 5 categories · Required</Text>
-              </View>
-              {overallStars > 0 && (
-                <View style={styles.overallBadge}>
-                  <Text style={{ color: '#fff', fontWeight: '900', fontSize: 16 }}>⭐ {overallStars}</Text>
-                </View>
-              )}
-            </View>
+        {/* Rating */}
+        {rated ? (
+          <View style={[styles.card, { alignItems: 'center' }]}>
+            <Text style={{ fontSize: 34 }}>🌸</Text>
+            <Text style={styles.driverName}>Thanks for your feedback</Text>
+            <Text style={{ fontSize: 22, color: '#F4C430', marginTop: 4 }}>{'★'.repeat(rated.stars)}<Text style={{ color: '#DDD' }}>{'★'.repeat(5 - rated.stars)}</Text></Text>
+            {rated.hasComplaint && <Text style={[styles.small, { marginTop: 6 }]}>Your complaint was sent to the safety team.</Text>}
+          </View>
+        ) : (
+          <View style={styles.card}>
+            <Text style={styles.label}>RATE YOUR RIDE</Text>
+            <View style={{ alignItems: 'center', marginVertical: 8 }}><StarRow rating={stars} setRating={setStars} size={40} /></View>
 
-            {/* 5 Category Ratings */}
-            {CATEGORIES.map(cat => (
-              <View key={cat.key} style={styles.categoryRow}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                  <Text style={{ fontSize: 20 }}>{cat.icon}</Text>
-                  <Text style={styles.catLabel}>{cat.label}</Text>
-                </View>
-                <StarRow
-                  rating={categoryRatings[cat.key]}
-                  setRating={v => setCategoryRatings(prev => ({ ...prev, [cat.key]: v }))}
-                  size={26}
-                />
+            <Text style={styles.section}>How was she on…</Text>
+            {CATEGORIES.map(c => (
+              <View key={c.key} style={styles.catRow}>
+                <Text style={styles.catLabel}>{c.icon} {c.label}</Text>
+                <StarRow rating={cats[c.key] || 0} setRating={v => setCats(x => ({ ...x, [c.key]: v }))} size={22} />
               </View>
             ))}
 
-            {/* Category rating messages */}
-            {overallStars > 0 && (
-              <View style={styles.ratingMsgBox}>
-                <Text style={styles.ratingMsg}>
-                  {['', '😟 Needs improvement', '😐 Below average', '🙂 Good ride!', '😊 Great driver!', '🌟 Excellent!'][overallStars]}
-                </Text>
-                <Text style={{ fontSize: 11, color: C.muted }}>Overall: {overallStars}/5 stars</Text>
-              </View>
-            )}
+            <Text style={styles.section}>What went well?</Text>
+            <View style={styles.tags}>{TAGS.good.map(([k, l]) => <Tag key={k} on={tags.includes(k)} label={l} onPress={() => toggleTag(k)} />)}</View>
+            <Text style={styles.section}>Anything wrong?</Text>
+            <View style={styles.tags}>{TAGS.bad.map(([k, l]) => <Tag key={k} bad on={tags.includes(k)} label={l} onPress={() => toggleTag(k)} />)}</View>
 
-            {/* Comment */}
-            {allRated && (
-              <TextInput
-                value={comment}
-                onChangeText={setComment}
-                placeholder="Add a comment (optional)..."
-                placeholderTextColor={C.muted}
-                multiline
-                style={styles.commentInput}
-              />
-            )}
+            <TextInput value={comment} onChangeText={setComment} placeholder="Tell us more (optional)" placeholderTextColor={C.muted}
+              multiline maxLength={500} style={styles.input} />
 
-            {/* Report a complaint */}
-            <TouchableOpacity onPress={() => setComplaint(!complaint)}
-              style={[styles.complaintRow, complaint && styles.complaintRowActive]}>
-              <View style={[styles.checkbox, complaint && styles.checkboxChecked]}>
-                {complaint && <Text style={{ color: '#fff', fontSize: 11 }}>✓</Text>}
-              </View>
-              <Text style={styles.complaintLabel}>🚨 Report a complaint about this ride</Text>
+            <TouchableOpacity onPress={() => setComplaint(x => !x)} style={styles.complaintToggle}>
+              <Text style={{ color: complaint ? C.danger : C.muted, fontWeight: '700' }}>{complaint ? '☑' : '☐'} Report a safety problem</Text>
             </TouchableOpacity>
-
             {complaint && (
-              <View style={styles.complaintTypes}>
-                <Text style={{ fontSize: 12, fontWeight: '700', color: C.text, marginBottom: 8 }}>Complaint Type:</Text>
-                {COMPLAINT_TYPES.map(({ value, label }) => (
-                  <TouchableOpacity key={value} onPress={() => setComplaintType(value)}
-                    style={[styles.complaintType, complaintType === value && styles.complaintTypeActive]}>
-                    <Text style={[styles.complaintTypeText, complaintType === value && { color: C.rose }]}>{label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
+              <>
+                <View style={styles.tags}>{COMPLAINT_TYPES.map(([k, l]) => <Tag key={k} bad on={complaintType === k} label={l} onPress={() => setComplaintType(k)} />)}</View>
+                <TextInput value={details} onChangeText={setDetails} placeholder="What happened? (sent to the safety team)" placeholderTextColor={C.muted}
+                  multiline maxLength={1000} style={styles.input} />
+              </>
             )}
 
-            <PrimaryBtn
-              title={loading ? 'Submitting...' : `Submit Rating${allRated ? ' ⭐' : ' (rate all 5)'}`}
-              onPress={submit}
-              loading={loading}
-            />
-          </>
+            <TouchableOpacity onPress={submit} disabled={sending} style={styles.submit}>
+              {sending ? <ActivityIndicator color="#fff" /> : <Text style={styles.submitText}>Submit rating</Text>}
+            </TouchableOpacity>
+          </View>
         )}
 
+        <TouchableOpacity onPress={() => navigation.reset({ index: 0, routes: [{ name: 'PassengerHome' }] })} style={styles.home}>
+          <Text style={{ color: C.rose, fontWeight: '800' }}>{rated ? 'Back to home' : 'Skip for now'}</Text>
+        </TouchableOpacity>
         <View style={{ height: 30 }} />
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 }
 
+const Row = ({ k, v, bold, color }) => (
+  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 3 }}>
+    <Text style={{ fontSize: 12, color: C.muted, fontWeight: bold ? '800' : '400' }}>{k}</Text>
+    <Text style={{ fontSize: 12, color: color || C.text, fontWeight: bold ? '800' : '600' }}>{v}</Text>
+  </View>
+);
+const Tag = ({ label, on, bad, onPress }) => (
+  <TouchableOpacity onPress={onPress} style={[styles.tag, on && { backgroundColor: bad ? C.danger : C.success, borderColor: bad ? C.danger : C.success }]}>
+    <Text style={[styles.tagText, on && { color: '#fff' }]}>{label}</Text>
+  </TouchableOpacity>
+);
+
 const styles = StyleSheet.create({
-  screen:           { flex: 1, backgroundColor: C.bg },
-  banner:           { padding: 32, alignItems: 'center', paddingBottom: 40 },
-  bannerTitle:      { color: '#fff', fontSize: 24, fontWeight: '800' },
-  bannerSub:        { color: 'rgba(255,255,255,0.75)', fontSize: 13, marginTop: 4 },
-  fareCard:         { backgroundColor: C.white, borderRadius: 18, padding: 16, borderWidth: 1, borderColor: C.border },
-  fareLabel:        { fontSize: 11, color: C.muted },
-  fareAmt:          { fontSize: 26, fontWeight: '900', color: C.rose, marginTop: 2 },
-  fareDist:         { fontSize: 14, fontWeight: '700', color: C.text, marginTop: 2 },
-  poolBadge:        { backgroundColor: C.rosePale, borderRadius: 10, padding: 8, marginTop: 10 },
-  confirmCard:      { backgroundColor: '#FEF9E7', borderRadius: 18, padding: 16, borderWidth: 2, borderColor: '#F39C12' },
-  confirmCardDone:  { backgroundColor: '#D5F5E3', borderColor: '#27AE60' },
-  confirmTitle:     { fontSize: 14, fontWeight: '800', color: C.text },
-  confirmSub:       { fontSize: 11, color: C.muted, marginTop: 2 },
-  confirmBtn:       { backgroundColor: '#27AE60', borderRadius: 14, padding: 14, alignItems: 'center', marginTop: 4 },
-  driverConfirmNote:{ backgroundColor: '#fff', borderRadius: 12, padding: 12, marginTop: 8 },
-  ratingHeader:     { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  driverThumb:      { width: 52, height: 52, borderRadius: 26, backgroundColor: C.rosePale, alignItems: 'center', justifyContent: 'center' },
-  ratingTitle:      { fontSize: 15, fontWeight: '800', color: C.text },
-  ratingSub:        { fontSize: 11, color: C.muted, marginTop: 2 },
-  overallBadge:     { backgroundColor: C.rose, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 6 },
-  categoryRow:      { flexDirection: 'row', alignItems: 'center', backgroundColor: C.white, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: C.border },
-  catLabel:         { fontSize: 13, fontWeight: '600', color: C.text },
-  ratingMsgBox:     { backgroundColor: C.rosePale, borderRadius: 14, padding: 14, alignItems: 'center' },
-  ratingMsg:        { fontSize: 16, fontWeight: '700', color: C.rose, marginBottom: 4 },
-  commentInput:     { backgroundColor: C.white, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: C.border, fontSize: 13, color: C.text, minHeight: 80, textAlignVertical: 'top' },
-  complaintRow:     { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: C.white, borderRadius: 14, padding: 14, borderWidth: 1.5, borderColor: C.border },
-  complaintRowActive:{ borderColor: C.danger, backgroundColor: '#FFF5F5' },
-  checkbox:         { width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: C.danger, alignItems: 'center', justifyContent: 'center' },
-  checkboxChecked:  { backgroundColor: C.danger },
-  complaintLabel:   { fontSize: 13, fontWeight: '600', color: C.text },
-  complaintTypes:   { backgroundColor: C.white, borderRadius: 14, padding: 14, borderWidth: 1, borderColor: C.border },
-  complaintType:    { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10, marginBottom: 6, backgroundColor: C.bg },
-  complaintTypeActive: { backgroundColor: C.rosePale },
-  complaintTypeText:{ fontSize: 13, color: C.text },
-  doneScreen:       { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32, backgroundColor: C.bg },
-  doneTitle:        { fontSize: 28, fontWeight: '800', color: C.text, marginBottom: 8 },
-  doneSub:          { fontSize: 14, color: C.muted, textAlign: 'center', marginBottom: 24 },
-  doneCard:         { backgroundColor: C.rosePale, borderRadius: 20, padding: 20, width: '100%', marginBottom: 28, alignItems: 'center' },
+  screen:     { flex: 1, backgroundColor: C.bg },
+  header:     { alignItems: 'center', paddingTop: 50, paddingBottom: 22, paddingHorizontal: 20 },
+  title:      { color: '#fff', fontSize: 22, fontWeight: '900', marginTop: 4 },
+  sub:        { color: 'rgba(255,255,255,0.8)', fontSize: 12, marginTop: 4, textAlign: 'center' },
+  card:       { backgroundColor: '#fff', borderRadius: 18, padding: 16, borderWidth: 1, borderColor: C.border },
+  label:      { fontSize: 10, fontWeight: '800', color: C.muted, letterSpacing: 1 },
+  amount:     { fontSize: 34, fontWeight: '900', color: C.text, marginTop: 4 },
+  payStatus:  { fontSize: 13, fontWeight: '700', marginTop: 2 },
+  divider:    { height: 1, backgroundColor: C.border, marginVertical: 10 },
+  driverName: { fontSize: 15, fontWeight: '800', color: C.text, marginTop: 4 },
+  small:      { fontSize: 11, color: C.muted, marginTop: 2 },
+  section:    { fontSize: 12, fontWeight: '800', color: C.text, marginTop: 14, marginBottom: 6 },
+  catRow:     { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 },
+  catLabel:   { fontSize: 12, color: C.text },
+  tags:       { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  tag:        { borderWidth: 1, borderColor: C.border, borderRadius: 14, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: '#fff' },
+  tagText:    { fontSize: 11, color: C.text, fontWeight: '600' },
+  input:      { borderWidth: 1, borderColor: C.border, borderRadius: 12, padding: 10, marginTop: 12, minHeight: 60, color: C.text, textAlignVertical: 'top' },
+  complaintToggle: { marginTop: 12 },
+  submit:     { backgroundColor: C.rose, borderRadius: 14, paddingVertical: 14, alignItems: 'center', marginTop: 16 },
+  submitText: { color: '#fff', fontWeight: '800', fontSize: 15 },
+  home:       { alignItems: 'center', padding: 10 },
 });

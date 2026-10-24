@@ -1,202 +1,222 @@
 // frontend/src/screens/shared/WalletScreen.js
-import React, { useState } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity,
-  ScrollView, FlatList,
-} from 'react-native';
+// Driver: real earnings and statistics (GET /api/driver/stats) — today/week/
+// month, last 7 days, commission, cash still to collect (mark it collected),
+// rating with categories, behaviour feedback and recent reviews.
+// Passenger: what she has paid, from her completed rides. Payment is cash in
+// this version — there is no in-app wallet balance or top-up.
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl, Alert } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
+import { driverAPI, rideAPI } from '../../services/api';
 import { C } from '../../utils/theme';
 
-// ── Demo transaction data ───────────────────────────────────────────────────
-const DEMO_TRANSACTIONS = [
-  { id: 't1', type: 'ride',     label: 'DHA → Gulberg III',     amount: -280,  date: '29 Apr, 10:30 AM', icon: '🚗' },
-  { id: 't2', type: 'topup',    label: 'Wallet Top-up (EasyPaisa)', amount: 1000, date: '28 Apr, 2:00 PM',  icon: '💳' },
-  { id: 't3', type: 'ride',     label: 'Johar Town → Liberty',  amount: -180,  date: '28 Apr, 2:15 PM',  icon: '🚗' },
-  { id: 't4', type: 'earning',  label: 'Ride Earned (Driver)',   amount: +240,  date: '27 Apr, 11:00 AM', icon: '💰' },
-  { id: 't5', type: 'ride',     label: 'Model Town → Packages', amount: -320,  date: '26 Apr, 9:00 AM',  icon: '🚗' },
-  { id: 't6', type: 'topup',    label: 'Wallet Top-up (JazzCash)', amount: 500,  date: '25 Apr, 6:00 PM',  icon: '💳' },
-  { id: 't7', type: 'ride',     label: 'Bahria Town → Wapda',   amount: -220,  date: '24 Apr, 4:45 PM',  icon: '🚗' },
-];
-
-const TOPUP_OPTIONS = [500, 1000, 2000, 5000];
+const CAT_LABEL = { safety: '🛡️ Safety', respectful: '🤝 Respectful', professionalism: '💼 Professionalism', punctuality: '⏰ Punctuality', cleanliness: '✨ Cleanliness' };
+const rs = (n) => `Rs ${Math.round(n || 0).toLocaleString()}`;
 
 export default function WalletScreen({ navigation }) {
-  const { user } = useAuth();
-  const isDriver = user?.role === 'driver';
+  const { user, mode } = useAuth();
+  const isDriver = user?.role === 'driver' && mode !== 'passenger';
+  const [stats, setStats]     = useState(null);
+  const [due, setDue]         = useState([]);          // driver: rides with cash still due
+  const [paid, setPaid]       = useState(null);        // passenger: { total, count, rides }
+  const [error, setError]     = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const [balance,      setBalance]      = useState(isDriver ? 3740 : 820);
-  const [transactions, setTransactions] = useState(DEMO_TRANSACTIONS);
-  const [tab,          setTab]          = useState('wallet'); // 'wallet' | 'earnings'
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      if (isDriver) {
+        const [s, h] = await Promise.all([driverAPI.getStats(), rideAPI.getMyRides({ status: 'completed', limit: 50 })]);
+        setStats(s.stats);
+        setDue(h.rides.filter(r => r.settlement?.status === 'due'));
+      } else {
+        const h = await rideAPI.getMyRides({ as: 'passenger', status: 'completed', limit: 50 });
+        setPaid({ total: h.rides.reduce((a, r) => a + (r.fare || 0), 0), count: h.total, shown: h.rides.length, rides: h.rides.slice(0, 10) });
+      }
+    } catch (e) {
+      setError(e.response?.data?.message || 'Could not load. Pull down to retry.');
+    }
+    setRefreshing(false);
+  }, [isDriver]);
+  useEffect(() => { load(); }, []);
 
-  const totalEarned  = transactions.filter(t => t.type === 'earning').reduce((s, t) => s + t.amount, 0);
-  const totalSpent   = transactions.filter(t => t.type === 'ride').reduce((s, t) => s + Math.abs(t.amount), 0);
+  const markCollected = (r) => Alert.alert('Cash received?', `Confirm you received ${rs(r.settlement.payable)} from ${r.passenger?.name || 'the passenger'}.`, [
+    { text: 'Cancel', style: 'cancel' },
+    { text: 'Yes, received', onPress: async () => {
+      try { await rideAPI.confirmPayment(r._id, 'collected'); load(); }
+      catch (e) { Alert.alert('Not saved', e.response?.data?.message || 'Try again.'); }
+    } },
+  ]);
 
-  const handleTopup = (amount) => {
-    const newTx = {
-      id: `t${Date.now()}`,
-      type: 'topup',
-      label: 'Wallet Top-up',
-      amount,
-      date: new Date().toLocaleString('en-PK', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }),
-      icon: '💳',
-    };
-    setBalance(b => b + amount);
-    setTransactions(prev => [newTx, ...prev]);
-  };
-
+  const loading = isDriver ? !stats : !paid;
   return (
     <View style={s.screen}>
-      {/* ── Header ── */}
       <LinearGradient colors={['#5C1448', '#C84B7A']} style={s.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()} style={s.backBtn}>
-          <Text style={s.backText}>← Back</Text>
-        </TouchableOpacity>
-        <Text style={s.title}>{isDriver ? '💰 Earnings Wallet' : '💳 My Wallet'}</Text>
-
-        {/* Balance Card */}
-        <View style={s.balanceCard}>
-          <Text style={s.balanceLabel}>Available Balance</Text>
-          <Text style={s.balanceAmount}>Rs. {balance.toLocaleString()}</Text>
-          <View style={s.balanceRow}>
-            <View style={s.balanceStat}>
-              <Text style={s.balanceStatVal}>Rs. {totalSpent.toLocaleString()}</Text>
-              <Text style={s.balanceStatLbl}>Total Spent</Text>
+        <TouchableOpacity onPress={() => navigation.goBack()}><Text style={s.back}>← Back</Text></TouchableOpacity>
+        <Text style={s.title}>{isDriver ? '💰 My Earnings' : '💵 My Payments'}</Text>
+        {isDriver && stats && (
+          <View style={s.bigCard}>
+            <Text style={s.bigLabel}>Total earned (after {Math.round(stats.commissionRate * 100)}% commission)</Text>
+            <Text style={s.bigAmount}>{rs(stats.totalEarnings)}</Text>
+            <View style={s.split}>
+              <Mini v={rs(stats.todayEarnings)} l="Today" />
+              <Mini v={rs(stats.weekEarnings)} l="Last 7 days" />
+              <Mini v={rs(stats.monthEarnings)} l="This month" />
             </View>
-            <View style={s.balanceDivider} />
-            <View style={s.balanceStat}>
-              <Text style={s.balanceStatVal}>{transactions.length}</Text>
-              <Text style={s.balanceStatLbl}>Transactions</Text>
-            </View>
-            {isDriver && <>
-              <View style={s.balanceDivider} />
-              <View style={s.balanceStat}>
-                <Text style={s.balanceStatVal}>Rs. {totalEarned.toLocaleString()}</Text>
-                <Text style={s.balanceStatLbl}>Earned</Text>
-              </View>
-            </>}
           </View>
-        </View>
+        )}
+        {!isDriver && paid && (
+          <View style={s.bigCard}>
+            <Text style={s.bigLabel}>Paid for completed rides{paid.count > paid.shown ? ` (latest ${paid.shown})` : ''}</Text>
+            <Text style={s.bigAmount}>{rs(paid.total)}</Text>
+            <Text style={[s.bigLabel, { marginTop: 4 }]}>{paid.count} completed ride{paid.count === 1 ? '' : 's'} · cash payment</Text>
+          </View>
+        )}
       </LinearGradient>
 
-      <ScrollView style={s.body} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={{ padding: 14, gap: 12, paddingBottom: 40 }}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}>
+        {loading && !error && <ActivityIndicator color={C.rose} style={{ marginTop: 30 }} />}
+        {!!error && <Text style={s.empty}>{error}</Text>}
 
-        {/* ── Top-up Section (Passenger only) ── */}
-        {!isDriver && (
-          <View style={s.card}>
-            <Text style={s.cardTitle}>⚡ Quick Top-up</Text>
-            <Text style={s.cardSub}>Add funds via JazzCash or EasyPaisa (simulated)</Text>
-            <View style={s.topupGrid}>
-              {TOPUP_OPTIONS.map(amt => (
-                <TouchableOpacity key={amt} onPress={() => handleTopup(amt)}
-                  style={s.topupBtn}>
-                  <Text style={s.topupAmount}>Rs. {amt}</Text>
-                </TouchableOpacity>
-              ))}
+        {isDriver && stats && (
+          <>
+            {/* Cash to collect */}
+            {due.length > 0 && (
+              <View style={[s.card, { borderColor: '#F39C12' }]}>
+                <Text style={s.cardTitle}>💵 Cash to collect · {rs(stats.cashDue)}</Text>
+                {due.map(r => (
+                  <View key={r._id} style={s.dueRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.rowMain}>{r.passenger?.name} · {rs(r.settlement.payable)}</Text>
+                      <Text style={s.rowSub} numberOfLines={1}>{r.dropoff}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => markCollected(r)} style={s.dueBtn}><Text style={{ color: '#fff', fontWeight: '700', fontSize: 11 }}>Received</Text></TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Last 7 days */}
+            <View style={s.card}>
+              <Text style={s.cardTitle}>📊 Last 7 days</Text>
+              <WeekBars daily={stats.daily} />
             </View>
-            <View style={s.payNote}>
-              <Text style={s.payNoteText}>
-                💡 In production, this integrates with JazzCash / EasyPaisa payment gateway
-              </Text>
+
+            <View style={s.card}>
+              <Text style={s.cardTitle}>🚗 Driving</Text>
+              <Stat k="Completed rides" v={stats.totalRides} />
+              <Stat k="Rides today" v={stats.todayRides} />
+              <Stat k="Pooled rides" v={stats.pooledRides} />
+              <Stat k="Distance driven" v={`${stats.totalDistance} km`} />
+              <Stat k="Time on trips" v={`${stats.totalHours} h`} />
+              <Stat k="Passengers paid (total fares)" v={rs(stats.totalFares)} />
+              <Stat k="Platform commission" v={rs(stats.totalCommission)} />
+              <Stat k="Acceptance rate" v={stats.acceptanceRate != null ? `${stats.acceptanceRate}% (${stats.requestsOffered} requests)` : 'No requests yet'} />
+              <Stat k="Rides I cancelled" v={stats.cancelledByDriver} />
             </View>
-          </View>
+
+            {/* Rating */}
+            <View style={s.card}>
+              <Text style={s.cardTitle}>⭐ Rating</Text>
+              {stats.totalRatings ? (
+                <>
+                  <Text style={s.ratingBig}>{Number(stats.averageRating).toFixed(1)} <Text style={{ fontSize: 13, color: C.muted }}>from {stats.totalRatings} rating{stats.totalRatings === 1 ? '' : 's'}</Text></Text>
+                  {Object.entries(stats.ratingCategories || {}).map(([k, v]) => <Stat key={k} k={CAT_LABEL[k] || k} v={`${v} ★`} />)}
+                  {Object.keys(stats.ratingTags || {}).length > 0 && (
+                    <View style={s.tags}>
+                      {Object.entries(stats.ratingTags).sort((a, b) => b[1] - a[1]).map(([t, n]) => (
+                        <Text key={t} style={s.tag}>{t.replace(/_/g, ' ')} ×{n}</Text>
+                      ))}
+                    </View>
+                  )}
+                  {stats.recentReviews?.filter(r => r.comment).map(r => (
+                    <View key={r._id} style={s.review}>
+                      <Text style={{ color: '#F4C430' }}>{'★'.repeat(r.stars)}</Text>
+                      <Text style={s.rowSub}>“{r.comment}”</Text>
+                    </View>
+                  ))}
+                </>
+              ) : <Text style={s.rowSub}>No ratings yet — your rating appears after passengers rate their rides.</Text>}
+            </View>
+          </>
         )}
 
-        {/* ── Driver Earnings Summary ── */}
-        {isDriver && (
+        {!isDriver && paid && (
           <View style={s.card}>
-            <Text style={s.cardTitle}>📊 Earnings Summary</Text>
-            {[
-              { lbl: "Today's Earnings",  val: 'Rs. 840',   icon: '📅' },
-              { lbl: 'This Week',         val: 'Rs. 3,740', icon: '📆' },
-              { lbl: 'Total Rides Given', val: `${user?.totalRides || 42}`,  icon: '🚗' },
-              { lbl: 'Average Rating',    val: `${(user?.averageRating || 4.8).toFixed(1)} ⭐`, icon: '⭐' },
-            ].map(item => (
-              <View key={item.lbl} style={s.earningRow}>
-                <Text style={{ fontSize: 20 }}>{item.icon}</Text>
-                <Text style={s.earningLbl}>{item.lbl}</Text>
-                <Text style={s.earningVal}>{item.val}</Text>
+            <Text style={s.cardTitle}>Recent payments</Text>
+            {paid.rides.length === 0 && <Text style={s.rowSub}>No completed rides yet.</Text>}
+            {paid.rides.map(r => (
+              <View key={r._id} style={s.dueRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={s.rowMain} numberOfLines={1}>{r.pickup} → {r.dropoff}</Text>
+                  <Text style={s.rowSub}>{new Date(r.date).toLocaleDateString('en-PK')} · {r.settlement?.status === 'collected' ? 'paid' : r.settlement?.status === 'due' ? 'cash due' : 'cash'}</Text>
+                </View>
+                <Text style={s.rowMain}>{rs(r.fare)}</Text>
               </View>
             ))}
+            <TouchableOpacity onPress={() => navigation.navigate('RideHistory')}><Text style={s.link}>See all rides →</Text></TouchableOpacity>
           </View>
         )}
-
-        {/* ── Transaction History ── */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>📋 Transaction History</Text>
-          {transactions.map(t => (
-            <View key={t.id} style={s.txRow}>
-              <View style={[s.txIcon, {
-                backgroundColor: t.type === 'topup' ? C.successBg
-                  : t.type === 'earning' ? '#FFF9E6'
-                  : C.rosePale,
-              }]}>
-                <Text style={{ fontSize: 18 }}>{t.icon}</Text>
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={s.txLabel} numberOfLines={1}>{t.label}</Text>
-                <Text style={s.txDate}>{t.date}</Text>
-              </View>
-              <Text style={[s.txAmount, {
-                color: t.amount > 0 ? C.success : C.rose,
-              }]}>
-                {t.amount > 0 ? '+' : ''}Rs. {Math.abs(t.amount)}
-              </Text>
-            </View>
-          ))}
-        </View>
-
-        {/* ── Payment Methods Note ── */}
-        <View style={[s.card, { backgroundColor: C.infoBg, borderColor: `${C.info}30` }]}>
-          <Text style={[s.cardTitle, { color: C.info }]}>💡 Payment Methods</Text>
-          {[
-            'JazzCash (integration ready)',
-            'EasyPaisa (integration ready)',
-            'Bank card — coming soon',
-            'Cash — accepted by all drivers',
-          ].map((m, i) => (
-            <View key={i} style={{ flexDirection: 'row', gap: 8, marginTop: 7 }}>
-              <Text style={{ color: C.info }}>•</Text>
-              <Text style={{ fontSize: 12, color: '#1a4a80', flex: 1 }}>{m}</Text>
-            </View>
-          ))}
-        </View>
-
-        <View style={{ height: 40 }} />
       </ScrollView>
     </View>
   );
 }
 
+// Bars for the last 7 days (days with no rides show as empty)
+const WeekBars = ({ daily = [] }) => {
+  const map = Object.fromEntries(daily.map(d => [d._id, d]));
+  const days = [...Array(7)].map((_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (6 - i));
+    const key = d.toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' });   // YYYY-MM-DD
+    return { key, label: d.toLocaleDateString('en-PK', { weekday: 'short' }), e: map[key]?.earnings || 0, n: map[key]?.rides || 0 };
+  });
+  const max = Math.max(1, ...days.map(d => d.e));
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'flex-end', height: 120, gap: 6, marginTop: 8 }}>
+      {days.map(d => (
+        <View key={d.key} style={{ flex: 1, alignItems: 'center' }}>
+          <Text style={{ fontSize: 8, color: C.muted }}>{d.e ? Math.round(d.e) : ''}</Text>
+          <View style={{ width: '70%', height: Math.max(2, (d.e / max) * 80), backgroundColor: d.e ? C.rose : C.border, borderRadius: 4 }} />
+          <Text style={{ fontSize: 9, color: C.muted, marginTop: 3 }}>{d.label}</Text>
+        </View>
+      ))}
+    </View>
+  );
+};
+const Mini = ({ v, l }) => (
+  <View style={{ flex: 1, alignItems: 'center' }}>
+    <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>{v}</Text>
+    <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 9, marginTop: 2 }}>{l}</Text>
+  </View>
+);
+const Stat = ({ k, v }) => (
+  <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 4 }}>
+    <Text style={{ fontSize: 12, color: C.muted }}>{k}</Text>
+    <Text style={{ fontSize: 12, color: C.text, fontWeight: '700' }}>{v}</Text>
+  </View>
+);
+
 const s = StyleSheet.create({
-  screen:          { flex: 1, backgroundColor: C.bg },
-  header:          { padding: 20, paddingBottom: 28 },
-  backBtn:         { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, alignSelf: 'flex-start', marginBottom: 14 },
-  backText:        { color: '#fff', fontWeight: '600', fontSize: 13 },
-  title:           { color: '#fff', fontSize: 22, fontWeight: '800', marginBottom: 16 },
-  balanceCard:     { backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 20, padding: 18 },
-  balanceLabel:    { color: 'rgba(255,255,255,0.75)', fontSize: 12, marginBottom: 4 },
-  balanceAmount:   { color: '#fff', fontSize: 34, fontWeight: '900', marginBottom: 16 },
-  balanceRow:      { flexDirection: 'row', alignItems: 'center' },
-  balanceStat:     { flex: 1, alignItems: 'center' },
-  balanceStatVal:  { color: '#fff', fontSize: 14, fontWeight: '700' },
-  balanceStatLbl:  { color: 'rgba(255,255,255,0.65)', fontSize: 10, marginTop: 2 },
-  balanceDivider:  { width: 1, height: 30, backgroundColor: 'rgba(255,255,255,0.3)' },
-  body:            { flex: 1, padding: 14 },
-  card:            { backgroundColor: '#fff', borderRadius: 18, padding: 16, marginBottom: 12, borderWidth: 1, borderColor: C.border },
-  cardTitle:       { fontSize: 13, fontWeight: '700', color: C.text, marginBottom: 4 },
-  cardSub:         { fontSize: 11, color: C.muted, marginBottom: 14 },
-  topupGrid:       { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 12 },
-  topupBtn:        { flex: 1, minWidth: '45%', backgroundColor: C.rosePale, borderRadius: 14, padding: 14, alignItems: 'center', borderWidth: 1.5, borderColor: `${C.rose}40` },
-  topupAmount:     { color: C.rose, fontWeight: '700', fontSize: 14 },
-  payNote:         { backgroundColor: C.goldLight, borderRadius: 12, padding: 10 },
-  payNoteText:     { fontSize: 11, color: '#A07030' },
-  earningRow:      { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border },
-  earningLbl:      { flex: 1, fontSize: 13, color: C.text },
-  earningVal:      { fontSize: 13, fontWeight: '700', color: C.rose },
-  txRow:           { flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: C.border },
-  txIcon:          { width: 42, height: 42, borderRadius: 21, alignItems: 'center', justifyContent: 'center' },
-  txLabel:         { fontSize: 12, fontWeight: '600', color: C.text },
-  txDate:          { fontSize: 10, color: C.muted, marginTop: 2 },
-  txAmount:        { fontSize: 13, fontWeight: '800' },
+  screen:    { flex: 1, backgroundColor: C.bg },
+  header:    { padding: 18, paddingTop: 46, paddingBottom: 20 },
+  back:      { color: '#fff', fontSize: 14, marginBottom: 6 },
+  title:     { color: '#fff', fontSize: 20, fontWeight: '900' },
+  bigCard:   { backgroundColor: 'rgba(255,255,255,0.15)', borderRadius: 18, padding: 16, marginTop: 14 },
+  bigLabel:  { color: 'rgba(255,255,255,0.8)', fontSize: 11 },
+  bigAmount: { color: '#fff', fontSize: 32, fontWeight: '900', marginTop: 4 },
+  split:     { flexDirection: 'row', marginTop: 12 },
+  card:      { backgroundColor: '#fff', borderRadius: 16, padding: 14, borderWidth: 1, borderColor: C.border },
+  cardTitle: { fontSize: 13, fontWeight: '800', color: C.text, marginBottom: 6 },
+  dueRow:    { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 6, borderTopWidth: 1, borderTopColor: C.border },
+  dueBtn:    { backgroundColor: C.success, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 7 },
+  rowMain:   { fontSize: 12, fontWeight: '700', color: C.text },
+  rowSub:    { fontSize: 11, color: C.muted, marginTop: 2 },
+  ratingBig: { fontSize: 28, fontWeight: '900', color: C.text, marginBottom: 6 },
+  tags:      { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  tag:       { fontSize: 10, color: C.text, backgroundColor: C.rosePale, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 4, overflow: 'hidden' },
+  review:    { borderTopWidth: 1, borderTopColor: C.border, paddingTop: 6, marginTop: 6 },
+  link:      { color: C.rose, fontWeight: '700', marginTop: 10, textAlign: 'right' },
+  empty:     { textAlign: 'center', color: C.muted, marginTop: 30 },
 });
