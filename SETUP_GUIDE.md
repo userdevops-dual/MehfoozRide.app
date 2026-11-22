@@ -163,6 +163,16 @@ Admin panel: driver approvals, background checks, SOS incidents, fake rides, liv
 - **Test data** — the automated tests create rides on the demo accounts. Preview with `node scripts/cleanup-test-data.js` and delete with `--apply` (recalculates ride counts and ratings).
 - **Tests** — `node tests/phase7.security.test.js` (28 checks) plus Phases 1–6.
 
+### Driver documents, Guardian Mode, admin reviews
+
+- **Driver documents** — Driver home → *My Documents*: driving licence photo, vehicle registration certificate photo, profile photo, and licence/vehicle details (`PUT /api/driver/documents`, multipart). Photos are stored privately; only admins can open the licence and registration photos. Changing licence or vehicle details sends an approved driver back to admin review. "Verified Female Driver" needs CNIC photos (signup) + licence + registration photos + vehicle + background check + admin approval.
+- **Driver photo** — passengers see the driver's profile photo on *Driver Found* (`GET /api/driver/:id/photo`, login required).
+- **Admin panel** — pending drivers show their CNIC, licence, registration and profile photos (tap to enlarge); new **Complaints** tab (review / resolve / dismiss with notes) and **SOS** tab (full incident: reporter, driver, vehicle, trip, last location, contact and police status).
+- **Guardian Mode** — every ride gets a private live-trip link (`/api/rides/live/<token>`, works in any browser, expires 2 h after the ride). Guardians are messaged when a driver is assigned, when the trip starts, on a route deviation and on arrival; each message's real status is stored (`simulated` in demo mode, `sent` with Twilio). The passenger can send the link herself with **Share trip** on the live-ride screen.
+- **Driver navigation** — *Navigate to pickup* / *Navigate to drop-off* open Google Maps directions.
+- **Pickup ETA** — from the road route (OSRM), refreshed about every 45 s.
+- **Tests** — `node tests/features.api.test.js` (37 checks).
+
 After pulling Phase 5, rebuild the app once (`npx expo run:android`) — it adds `expo-speech` and `expo-audio`.
 
 ---

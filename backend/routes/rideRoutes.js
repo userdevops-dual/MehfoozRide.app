@@ -5,12 +5,15 @@ const {
   bookRide, estimateRide, acceptRide, declineRide, driverArrived, verifyOTP,
   completeRide, cancelRide, submitRating,
   getMyRides, getRideById, activateSOS, getLiveFare,
-  addSafePoint, removeSafePoint, requestSafePoint, acknowledgeSafePoint, confirmPayment,
+  addSafePoint, removeSafePoint, requestSafePoint, acknowledgeSafePoint, confirmPayment, liveRide,
 } = require('../controllers/rideController');
 const { protect } = require('../middleware/auth');
 
 router.param('id', validId);           // malformed ids → 404
 router.param('pointId', validId);
+// Guardian Mode: public live-tracking page/data for one ride (random token is the only access)
+router.get('/live/:token', liveRide);
+
 router.use(protect);
 
 router.post('/estimate',          estimateRide);  // routes + fare before booking

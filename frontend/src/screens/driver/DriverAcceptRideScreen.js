@@ -520,6 +520,11 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
               <View style={styles.actionBox}>
                 <Text style={styles.actionTitle}>📍 Drive to {stop.passengerName}'s pickup</Text>
                 <Text style={styles.actionDesc}>When you reach her, tap below. You'll then confirm she is female and enter her OTP.</Text>
+                {Array.isArray(stop.pickupCoordinates) && (
+                  <TouchableOpacity onPress={() => navigateTo(stop.pickupCoordinates)} style={[styles.actionBtn, styles.navBtn]}>
+                    <Text style={[styles.actionBtnText, { color: C.info }]}>🧭 Navigate to pickup</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity onPress={handleArrived} style={[styles.actionBtn, { backgroundColor: C.info }]} disabled={loading}>
                   {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>✓ I've Arrived at Pickup</Text>}
                 </TouchableOpacity>
@@ -561,6 +566,11 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
                   </View>
                 </View>
                 <Text style={styles.actionDesc}>Tap when she has been dropped off safely. The final fare is calculated from the actual trip.</Text>
+                {Array.isArray(stop.dropoffCoordinates) && (
+                  <TouchableOpacity onPress={() => navigateTo(stop.dropoffCoordinates)} style={[styles.actionBtn, styles.navBtn]}>
+                    <Text style={[styles.actionBtnText, { color: C.info }]}>🧭 Navigate to drop-off</Text>
+                  </TouchableOpacity>
+                )}
                 <TouchableOpacity onPress={handleComplete} style={[styles.actionBtn, { backgroundColor: C.rose }]} disabled={loading}>
                   {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.actionBtnText}>🏁 Complete {stop.passengerName}'s Ride</Text>}
                 </TouchableOpacity>
@@ -576,6 +586,7 @@ export default function DriverAcceptRideScreen({ navigation, route }) {
 }
 
 const styles = StyleSheet.create({
+  navBtn:       { backgroundColor: '#fff', borderWidth: 1.5, borderColor: C.info, marginBottom: 8 },
   cashBtn:      { backgroundColor: C.success, borderRadius: 10, paddingHorizontal: 8, paddingVertical: 5 },
   cashBtnText:  { color: '#fff', fontSize: 10, fontWeight: '800' },
   sosBtn:       { backgroundColor: '#E53935', borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6, marginRight: 8 },

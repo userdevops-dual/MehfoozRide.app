@@ -24,6 +24,14 @@ api.interceptors.request.use((config) => {
 
 export default api;
 
+// Image from our API that needs the login token (driver photos, admin document views).
+// path: '/api/…' as returned by the server. Use as <Image source={authImage(path)} />.
+export const authImage = (path) => path
+  ? { uri: `${BACKEND_URL}${path}`, headers: authToken ? { Authorization: `Bearer ${authToken}` } : {} }
+  : null;
+// Full address of a link the server returns as a path (e.g. the live trip link)
+export const fullUrl = (pathOrUrl) => !pathOrUrl ? null : /^https?:/.test(pathOrUrl) ? pathOrUrl : `${BACKEND_URL}${pathOrUrl}`;
+
 // ── Auth API ──────────────────────────────────────────────────────────────
 // Image picked with expo-image-picker → multipart file part
 const toFilePart = (img, name) => ({
@@ -85,6 +93,14 @@ export const rideAPI = {
 // ── Driver API ───────────────────────────────────────────────────────────
 export const driverAPI = {
   getStats:  ()           => api.get('/driver/stats').then(r => r.data),
+  getDocuments: () => api.get('/driver/documents').then(r => r.data),
+  // files: { licensePhoto?, registrationPhoto?, profilePhoto? } from expo-image-picker; fields: licence/vehicle text
+  uploadDocuments: (files = {}, fields = {}) => {
+    const fd = new FormData();
+    Object.entries(fields).forEach(([k, v]) => { if (v !== undefined && v !== null) fd.append(k, String(v)); });
+    Object.entries(files).forEach(([k, img]) => { if (img) fd.append(k, toFilePart(img, k)); });
+    return api.put('/driver/documents', fd, { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 60000 }).then(r => r.data);
+  },
   setOnline: (isOnline)   => api.put('/driver/online', { isOnline }).then(r => r.data),
 };
 

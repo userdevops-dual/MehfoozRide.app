@@ -16,7 +16,8 @@ const driverVerification = (user) => {
   const d = user?.driverDetails || {};
   const checks = {
     cnic:            !!user?.cnicVerified,
-    documents:       !!(d.cnicPhoto && d.licensePhoto && d.registrationPhoto),
+    // CNIC photos are saved at signup under cnicImages (older records: driverDetails.cnicPhoto)
+    documents:       !!((user?.cnicImages?.uploadedAt || d.cnicPhoto) && d.licensePhoto && d.registrationPhoto),
     vehicle:         !!((d.vehicleMake || d.vehicleModel) && d.licensePlate),
     backgroundCheck: d.backgroundCheck === "passed",
     adminApproved:   user?.isVerified === true,

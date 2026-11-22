@@ -4,10 +4,10 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView,
-  StyleSheet, Alert, ActivityIndicator,
+  StyleSheet, Alert, ActivityIndicator, Image, Modal, TextInput,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import api from '../../services/api';
+import api, { authImage } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { C, GRAD } from '../../utils/theme';
 
@@ -26,6 +26,10 @@ export default function AdminDriverApprovalScreen({ navigation }) {
   const [rides,     setRides]   = useState([]);
   const [stats,     setStats]   = useState(null);
   const [loading,   setLoading] = useState(false);
+  const [complaints, setComplaints] = useState([]);
+  const [sessions,  setSessions]  = useState([]);
+  const [viewer,    setViewer]    = useState(null);   // { title, path } of a document photo
+  const [notes,     setNotes]     = useState({});     // complaintId → admin notes
 
   useEffect(() => { fetchData(); }, [tab]);
 
@@ -42,8 +46,11 @@ export default function AdminDriverApprovalScreen({ navigation }) {
         const r = await adminAPI.get('/fake-ride-incidents');
         setIncidents(r.incidents || []);
       } else if (tab === 'sos') {
-        const r = await adminAPI.get('/sos-incidents');
-        setIncidents(r.incidents || []);
+        const r = await adminAPI.get('/emergencies');
+        setSessions(r.sessions || []);
+      } else if (tab === 'complaints') {
+        const r = await adminAPI.get('/complaints');
+        setComplaints(r.complaints || []);
       } else if (tab === 'active') {
         const r = await adminAPI.get('/active-rides');
         setRides(r.rides || []);
@@ -106,11 +113,30 @@ export default function AdminDriverApprovalScreen({ navigation }) {
     );
   };
 
+  const setComplaintStatus = async (c, status) => {
+    try {
+      await adminAPI.put(`/complaints/${c._id}`, { status, adminNotes: notes[c._id] ?? c.adminNotes ?? '' });
+      fetchData();
+    } catch (err) {
+      Alert.alert('Not saved', err.response?.data?.message || 'Server error. Please try again.');
+    }
+  };
+
+  // Document photos the driver has on file (admin-only endpoints)
+  const docsOf = (d) => [
+    d.cnicImages?.uploadedAt && { title: 'CNIC front', path: `/api/admin/users/${d._id}/cnic/front` },
+    d.cnicImages?.uploadedAt && { title: 'CNIC back',  path: `/api/admin/users/${d._id}/cnic/back` },
+    d.driverDetails?.licensePhoto && { title: 'Driving licence', path: `/api/admin/users/${d._id}/doc/license` },
+    d.driverDetails?.registrationPhoto && { title: 'Vehicle registration', path: `/api/admin/users/${d._id}/doc/registration` },
+    d.profilePhoto && { title: 'Profile photo', path: `/api/admin/users/${d._id}/doc/profile` },
+  ].filter(Boolean);
+
   const TABS = [
     { id: 'pending',    label: '⏳ Pending',    color: C.gold   },
     { id: 'background', label: '🔍 Background', color: C.info   },
     { id: 'fake',       label: '🚨 Fake Rides', color: C.danger },
     { id: 'sos',        label: '🆘 SOS',        color: '#E74C3C' },
+    { id: 'complaints', label: '📝 Complaints', color: '#B07030' },
     { id: 'active',     label: '🟢 Live Rides', color: C.success },
     { id: 'stats',      label: '📊 Stats',      color: C.plum   },
   ];
@@ -139,6 +165,15 @@ export default function AdminDriverApprovalScreen({ navigation }) {
           </TouchableOpacity>
         ))}
       </ScrollView>
+
+      {/* Full-size document photo */}
+      <Modal visible={!!viewer} transparent animationType="fade" onRequestClose={() => setViewer(null)}>
+        <TouchableOpacity activeOpacity={1} onPress={() => setViewer(null)} style={styles.viewerBg}>
+          <Text style={styles.viewerTitle}>{viewer?.title}</Text>
+          {viewer && <Image source={authImage(viewer.path)} style={styles.viewerImg} resizeMode="contain" />}
+          <Text style={styles.viewerHint}>Tap anywhere to close</Text>
+        </TouchableOpacity>
+      </Modal>
 
       {loading
         ? <ActivityIndicator color={C.rose} size="large" style={{ marginTop: 60 }} />
@@ -221,6 +256,8 @@ export default function AdminDriverApprovalScreen({ navigation }) {
                         { lbl: 'Driving License',     pass: !!d.driverDetails?.licenseNumber,        val: d.driverDetails?.licenseNumber || '—' },
                         { lbl: 'Vehicle Registration',pass: !!d.driverDetails?.licensePlate,         val: d.driverDetails?.licensePlate || '—' },
                         { lbl: 'Vehicle',             pass: !!d.driverDetails?.vehicleMake,          val: `${d.driverDetails?.vehicleMake || ''} ${d.driverDetails?.vehicleModel || ''}`.trim() || '—' },
+                        { lbl: 'Licence photo',       pass: !!d.driverDetails?.licensePhoto,         val: d.driverDetails?.licensePhoto ? 'uploaded' : 'missing' },
+                        { lbl: 'Registration photo',  pass: !!d.driverDetails?.registrationPhoto,    val: d.driverDetails?.registrationPhoto ? 'uploaded' : 'missing' },
                         { lbl: 'Background Check',    pass: d.driverDetails?.backgroundCheck==='passed', val: d.driverDetails?.backgroundCheck || 'pending' },
                       ].map((item, i) => (
                         <View key={i} style={styles.checkRow}>
@@ -230,6 +267,17 @@ export default function AdminDriverApprovalScreen({ navigation }) {
                         </View>
                       ))}
                     </View>
+
+                    {/* Document photos — tap to view */}
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                      {docsOf(d).length === 0 && <Text style={styles.checkVal}>No document photos uploaded yet</Text>}
+                      {docsOf(d).map(doc => (
+                        <TouchableOpacity key={doc.path} onPress={() => setViewer(doc)} style={styles.docThumbBox}>
+                          <Image source={authImage(doc.path)} style={styles.docThumb} />
+                          <Text style={styles.docThumbLabel} numberOfLines={1}>{doc.title}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
 
                     <View style={styles.actionRow}>
                       <TouchableOpacity onPress={() => handleApprove(d)} style={styles.approveBtn}>
@@ -243,14 +291,64 @@ export default function AdminDriverApprovalScreen({ navigation }) {
                 ))
             )}
 
-            {/* FAKE RIDES / SOS INCIDENTS */}
-            {(tab === 'fake' || tab === 'sos') && (
+            {/* SOS EMERGENCY SESSIONS — the incident payload prepared for police/emergency services */}
+            {tab === 'sos' && (
+              sessions.length === 0
+                ? <View style={styles.emptyBox}><Text style={{ fontSize: 40 }}>✅</Text><Text style={styles.emptyText}>No SOS incidents</Text></View>
+                : sessions.map(s => {
+                  const inc = s.incident || {};
+                  const loc = s.lastLocation?.coordinates;
+                  return (
+                    <View key={s._id} style={[styles.incidentCard, { borderLeftColor: s.status === 'active' ? '#E74C3C' : '#999' }]}>
+                      <Text style={styles.incidentTitle}>{s.status === 'active' ? '🆘 SOS ACTIVE' : '✅ Resolved'} · raised by {inc.reporter?.role}</Text>
+                      <Text style={styles.incidentRow}>👩 {inc.reporter?.name} · {inc.reporter?.phone}</Text>
+                      {inc.driver?.name && <Text style={styles.incidentRow}>🚗 {inc.driver.name} · {inc.driver.phone} · {inc.driver.vehicle} {inc.driver.licensePlate} · {inc.driver.verified ? 'verified' : 'NOT verified'}</Text>}
+                      {inc.trip?.rideId && <Text style={styles.incidentRow}>📍 {inc.trip.pickup?.address} → {inc.trip.dropoff?.address}</Text>}
+                      {inc.trip?.routeDeviated && <Text style={[styles.incidentRow, { color: '#E74C3C' }]}>⚠️ Driver left the chosen route on this trip</Text>}
+                      <Text style={styles.incidentRow}>📡 Last location: {loc ? `${loc[1].toFixed(5)}, ${loc[0].toFixed(5)}` : 'not received'}{s.lastLocation?.at ? ` at ${new Date(s.lastLocation.at).toLocaleTimeString()}` : ''}</Text>
+                      <Text style={styles.incidentRow}>👨‍👩‍👧 Contacts: {(s.contactNotifications || []).slice(0, inc.reporter?.emergencyContacts?.length || 5).map(c => `${c.name} (${c.status})`).join(', ') || 'none saved'}</Text>
+                      <Text style={styles.incidentRow}>👮 Police: {s.police?.status}{s.police?.detail ? ` — ${s.police.detail}` : ''}</Text>
+                      <Text style={[styles.incidentRow, { color: C.muted }]}>{new Date(s.startedAt).toLocaleString()}{s.resolvedAt ? ` · resolved ${new Date(s.resolvedAt).toLocaleTimeString()}` : ''}</Text>
+                    </View>
+                  );
+                })
+            )}
+
+            {/* PASSENGER COMPLAINTS */}
+            {tab === 'complaints' && (
+              complaints.length === 0
+                ? <View style={styles.emptyBox}><Text style={{ fontSize: 40 }}>✅</Text><Text style={styles.emptyText}>No complaints</Text></View>
+                : complaints.map(c => (
+                  <View key={c._id} style={[styles.incidentCard, { borderLeftColor: c.complaintStatus === 'pending' ? '#E67E22' : '#999' }]}>
+                    <Text style={styles.incidentTitle}>📝 {String(c.complaintType || 'other').replace(/_/g, ' ')} · {c.complaintStatus}</Text>
+                    <Text style={styles.incidentRow}>From: {c.ratedBy?.name} · {c.ratedBy?.phone}</Text>
+                    <Text style={styles.incidentRow}>Driver: {c.ratedUser?.name} · {c.ratedUser?.driverDetails?.licensePlate} · rating {c.ratedUser?.totalRatings ? Number(c.ratedUser.averageRating).toFixed(1) : 'new'}</Text>
+                    {c.ride && <Text style={styles.incidentRow}>Ride: {c.ride.pickupLocation?.address} → {c.ride.dropoffLocation?.address}{c.ride.routeDeviated ? ' · route changed' : ''}{c.ride.sosActivated ? ' · SOS used' : ''}</Text>}
+                    <Text style={styles.incidentRow}>Stars given: {'★'.repeat(c.stars)}</Text>
+                    {!!c.complaintDetails && <Text style={[styles.incidentRow, { fontStyle: 'italic' }]}>“{c.complaintDetails}”</Text>}
+                    <TextInput value={notes[c._id] ?? c.adminNotes ?? ''} onChangeText={v => setNotes(n => ({ ...n, [c._id]: v }))}
+                      placeholder="Admin notes" placeholderTextColor="#999" style={styles.notesInput} multiline />
+                    <View style={{ flexDirection: 'row', gap: 6, flexWrap: 'wrap' }}>
+                      {['reviewed', 'resolved', 'dismissed'].map(st => (
+                        <TouchableOpacity key={st} onPress={() => setComplaintStatus(c, st)}
+                          style={[styles.statusBtn, c.complaintStatus === st && { backgroundColor: '#1A1A2E' }]}>
+                          <Text style={{ color: c.complaintStatus === st ? '#fff' : '#333', fontSize: 11, fontWeight: '700' }}>{st}</Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                    <Text style={[styles.incidentRow, { color: C.muted }]}>{new Date(c.createdAt).toLocaleString()}</Text>
+                  </View>
+                ))
+            )}
+
+            {/* FAKE RIDES */}
+            {tab === 'fake' && (
               incidents.length === 0
-                ? <View style={styles.emptyBox}><Text style={{ fontSize: 40 }}>✅</Text><Text style={styles.emptyText}>No {tab === 'fake' ? 'fake ride' : 'SOS'} incidents</Text></View>
+                ? <View style={styles.emptyBox}><Text style={{ fontSize: 40 }}>✅</Text><Text style={styles.emptyText}>No fake ride incidents</Text></View>
                 : incidents.map((inc, i) => (
-                  <View key={i} style={[styles.incidentCard, { borderLeftColor: tab === 'sos' ? C.danger : '#E74C3C' }]}>
+                  <View key={i} style={[styles.incidentCard, { borderLeftColor: '#E74C3C' }]}>
                     <Text style={styles.incidentTitle}>
-                      {tab === 'sos' ? '🆘 SOS Incident' : '🚨 Fake Ride Attempt'}
+                      🚨 Fake Ride Attempt
                     </Text>
                     <Text style={styles.incidentRow}>Passenger: {inc.passenger?.name || 'N/A'} · {inc.passenger?.phone || ''}</Text>
                     <Text style={styles.incidentRow}>Driver: {inc.driver?.name || 'N/A'} · {inc.driver?.driverDetails?.licensePlate || ''}</Text>
@@ -302,4 +400,13 @@ const styles = StyleSheet.create({
   incidentCard:   { backgroundColor: '#fff', borderRadius: 16, padding: 16, borderLeftWidth: 4, gap: 5 },
   incidentTitle:  { fontSize: 14, fontWeight: '800', color: '#1A1A1A', marginBottom: 4 },
   incidentRow:    { fontSize: 12, color: '#555' },
+  docThumbBox:    { width: 96, marginRight: 8, alignItems: 'center' },
+  docThumb:       { width: 96, height: 64, borderRadius: 8, backgroundColor: '#eee' },
+  docThumbLabel:  { fontSize: 9, color: '#666', marginTop: 3 },
+  viewerBg:       { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', alignItems: 'center', justifyContent: 'center', padding: 16 },
+  viewerTitle:    { color: '#fff', fontSize: 16, fontWeight: '800', marginBottom: 10 },
+  viewerImg:      { width: '100%', height: '75%' },
+  viewerHint:     { color: 'rgba(255,255,255,0.6)', fontSize: 11, marginTop: 10 },
+  notesInput:     { borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 8, fontSize: 12, color: '#222', minHeight: 40, marginTop: 4 },
+  statusBtn:      { borderWidth: 1, borderColor: '#ccc', borderRadius: 10, paddingHorizontal: 10, paddingVertical: 6 },
 });

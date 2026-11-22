@@ -27,4 +27,29 @@ const uploadCnicImages = (req, res, next) =>
     res.status(400).json({ success: false, message });
   });
 
-module.exports = { uploadCnicImages };
+// Driver documents (any of them; each optional so they can be replaced one at a time)
+const docsUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: config.uploads.maxImageBytes, files: 3 },
+  fileFilter: (req, file, cb) => {
+    if (config.uploads.allowedImageTypes.includes(file.mimetype)) return cb(null, true);
+    cb(new multer.MulterError("LIMIT_UNEXPECTED_FILE", file.fieldname));
+  },
+}).fields([
+  { name: "licensePhoto",      maxCount: 1 },
+  { name: "registrationPhoto", maxCount: 1 },
+  { name: "profilePhoto",      maxCount: 1 },
+]);
+
+const uploadDriverDocs = (req, res, next) =>
+  docsUpload(req, res, (err) => {
+    if (!err) return next();
+    const mb = Math.round(config.uploads.maxImageBytes / (1024 * 1024));
+    const message =
+      err.code === "LIMIT_FILE_SIZE"        ? `Each photo must be smaller than ${mb} MB.` :
+      err.code === "LIMIT_UNEXPECTED_FILE"  ? "Photos must be JPG, PNG or WebP images." :
+      "Could not read the uploaded photos.";
+    res.status(400).json({ success: false, message });
+  });
+
+module.exports = { uploadCnicImages, uploadDriverDocs };

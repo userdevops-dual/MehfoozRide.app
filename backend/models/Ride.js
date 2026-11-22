@@ -135,11 +135,15 @@ const RideSchema = new mongoose.Schema(
       {
         event:     { type: String },  // "ride_booked", "driver_assigned", "ride_started", "ride_completed", "sos"
         sentAt:    { type: Date, default: Date.now },
-        contacts:  [{ name: String, phone: String }],
+        // status: simulated (demo, not sent) | sent | failed | not_configured
+        contacts:  [{ name: String, phone: String, status: String, detail: String }],
       },
     ],
 
     rating: { type: mongoose.Schema.Types.ObjectId, ref: "Rating", default: null },
+
+    // Guardian Mode: private live-tracking link (services/rideShare.js)
+    shareToken: { type: String, index: { unique: true, sparse: true } },
 
     // ── Fare settlement (set when the ride is completed) ─────────────────
     // payable: what the passenger pays · commission: platform share ·

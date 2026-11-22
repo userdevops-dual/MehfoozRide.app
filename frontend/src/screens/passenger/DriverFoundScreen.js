@@ -5,11 +5,11 @@
 import React, { useState } from 'react';
 import {
   View, Text, TouchableOpacity, ScrollView,
-  StyleSheet, Alert, Modal, Linking,
+  StyleSheet, Alert, Modal, Linking, Image,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import { Badge, PrimaryBtn, GhostBtn, Card } from '../../components/UI';
-import { rideAPI } from '../../services/api';
+import { rideAPI, authImage } from '../../services/api';
 import { C, GRAD } from '../../utils/theme';
 
 const dial = (number) => {
@@ -113,7 +113,7 @@ export default function DriverFoundScreen({ navigation, route }) {
 
             {/* Driver photo placeholder */}
             <View style={styles.driverPhotoBox}>
-              <View style={styles.driverPhotoAvatar}><Text style={{ fontSize: 48 }}>👩</Text></View>
+              <View style={styles.driverPhotoAvatar}>{driver?.photo ? <Image source={authImage(driver.photo)} style={{ width: 70, height: 70, borderRadius: 35 }} /> : <Text style={{ fontSize: 48 }}>👩</Text>}</View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.verifyDriverName}>{driverName}</Text>
                 <Text style={styles.verifyDriverSub}>⭐ {driverRating} · {vLabel}</Text>
@@ -187,7 +187,7 @@ export default function DriverFoundScreen({ navigation, route }) {
 
         {/* Driver Info */}
         <View style={styles.driverRow}>
-          <View style={styles.driverAvatar}><Text style={{ fontSize: 32 }}>👩</Text></View>
+          <View style={styles.driverAvatar}>{driver?.photo ? <Image source={authImage(driver.photo)} style={{ width: 64, height: 64, borderRadius: 32 }} /> : <Text style={{ fontSize: 32 }}>👩</Text>}</View>
           <View style={{ flex: 1 }}>
             <Text style={styles.driverName}>{driverName}</Text>
             <Text style={styles.driverRating}>⭐ {driverRating} · {vLabel}</Text>

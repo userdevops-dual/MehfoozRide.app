@@ -132,7 +132,7 @@ const start = async ({ userId, rideId, coordinates, accuracy }) => {
     : { $or: [{ passenger: userId }, { driver: userId }], status: { $in: ACTIVE_RIDE } };
   const ride = await Ride.findOne(rideQuery).sort({ createdAt: -1 })
     .populate("passenger", "name phone guardianContacts")
-    .populate("driver", "name phone isVerified cnicVerified driverDetails");
+    .populate("driver", "name phone isVerified cnicVerified driverDetails cnicImages.uploadedAt");
   if (rideId && !ride) { const e = new Error("Ride not found"); e.status = 404; throw e; }
 
   const existing = await EmergencySession.findOne({ raisedBy: userId, status: "active" });

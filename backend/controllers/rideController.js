@@ -17,6 +17,7 @@ const routeMonitor = require("../services/routeMonitor");
 const emergency = require("../services/emergency");
 const { driverVerification } = require("../services/verification");
 const realtime = require("../services/realtime");
+const rideShare = require("../services/rideShare");
 const ratings  = require("../services/ratings");
 const { FARE, soloFare, poolEstimateFor, billableDistance, trackDistanceKm, validRideType } = require("../services/fare");
 const { fromLngLat, inServiceArea } = require("../utils/geoValidation");
@@ -179,6 +180,7 @@ exports.bookRide = async (req, res) => {
     const lead   = await matching.leadRideOf(await Ride.findById(ride._id));
     const driversNotified = await matching.offerToDrivers(lead._id);
 
+    await rideShare.ensureToken(ride._id);
     const fresh = await Ride.findById(ride._id).select("+otp");
     const passenger = await User.findById(req.user.id).select("guardianContacts");
     const activeGuardians = (passenger.guardianContacts || []).filter(c => c.isActive);
@@ -204,6 +206,7 @@ exports.bookRide = async (req, res) => {
         isPooled:         fresh.isPooled,
         pool:             fresh.pool,
         requestExpiresAt: fresh.requestExpiresAt,
+        shareLink:        rideShare.fullLink(fresh.shareToken),   // Guardian Mode link (passenger only)
       },
       pool: pooled ? { passengers: pooled.passengers, yourFare: fresh.farePerPassenger, soloFare: fresh.soloFare } : null,
       driversNotified,
@@ -285,7 +288,7 @@ exports.acceptRide = async (req, res) => {
       totalRides:   driver.totalRides,
       verified:     verification.verified,
       verification,                       // which checks passed, and whether this is demo data
-      photo:        driver.profilePhoto || null,
+      photo:        driver.profilePhoto ? `/api/driver/${driver._id}/photo` : null,   // URL, never the storage key
       vehicle:      `${driver.driverDetails?.vehicleMake || ""} ${driver.driverDetails?.vehicleModel || ""}`.trim(),
       vehicleColor: driver.driverDetails?.vehicleColor,
       licensePlate: driver.driverDetails?.licensePlate,
@@ -297,11 +300,7 @@ exports.acceptRide = async (req, res) => {
         rideId: r._id, driver: driverInfo,
         pool: rides.length > 1 ? { passengers: rides.length, yourFare: r.farePerPassenger } : null,
       });
-      const guardians = (r.passenger.guardianContacts || []).filter(c => c.isActive);
-      if (guardians.length) {
-        console.log(`📱 [DEMO — SMS NOT SENT] Guardian notice: driver assigned for ${r.passenger.name}`);
-        guardians.forEach(g => console.log(`  → ${g.name} (${g.phone}): Driver ${driver.name} | ${driverInfo.licensePlate} is on the way`));
-      }
+      rideShare.notifyGuardians(r._id, "driver_assigned");   // honest delivery status is stored on the ride
       matching.withdrawOffer(r, "accepted_by_other_driver", req.user.id);
     }
 
@@ -444,12 +443,7 @@ exports.verifyOTP = async (req, res) => {
       .populate("driver", "name phone driverDetails");
 
     const activeGuardians = (fullRide.passenger.guardianContacts || []).filter(c => c.isActive);
-    if (activeGuardians.length > 0) {
-      console.log(`🛡️ [DEMO — SMS NOT SENT] Guardian notice: ${fullRide.passenger.name}'s ride has started`);
-      activeGuardians.forEach(g => {
-        console.log(`  → ${g.name} (${g.phone}): Ride started | Driver: ${fullRide.driver?.name} | Plate: ${fullRide.driver?.driverDetails?.licensePlate}`);
-      });
-    }
+    rideShare.notifyGuardians(ride._id, "ride_started");
 
     res.status(200).json({
       success: true,
@@ -537,10 +531,7 @@ exports.completeRide = async (req, res) => {
     // ── Notify guardians ride is complete ──
     const fullRide = await Ride.findById(ride._id).populate("passenger", "name phone guardianContacts");
     const activeGuardians = (fullRide.passenger.guardianContacts || []).filter(c => c.isActive);
-    if (activeGuardians.length > 0) {
-      console.log(`✅ [DEMO — SMS NOT SENT] Guardian notice: ${fullRide.passenger.name} arrived safely`);
-      activeGuardians.forEach(g => console.log(`  → ${g.name} (${g.phone}): ${fullRide.passenger.name} has arrived safely!`));
-    }
+    rideShare.notifyGuardians(done._id, "ride_completed");
 
     res.status(200).json({
       success: true,
@@ -772,7 +763,7 @@ const lifecycleOf = (ride) => {
 exports.getRideById = async (req, res) => {
   try {
     const ride = await Ride.findById(req.params.id)
-      .populate("driver",    "name phone averageRating totalRatings totalRides profilePhoto isVerified cnicVerified driverDetails")
+      .populate("driver",    "name phone averageRating totalRatings totalRides profilePhoto isVerified cnicVerified driverDetails cnicImages.uploadedAt")
       .populate("passenger", "name phone guardianContacts")
       .populate("rating")
       .select("+otp");
@@ -783,8 +774,13 @@ exports.getRideById = async (req, res) => {
     const out = ride.toObject();
     const passengerSelf = isPassenger(ride, req.user);
     if (!passengerSelf) delete out.otp;
+    // Guardian Mode link and guardian delivery log: the passenger (and admins) only
+    if (passengerSelf && ride.shareToken) out.shareLink = rideShare.fullLink(ride.shareToken);
+    delete out.shareToken;
+    if (!passengerSelf && req.user.role !== "admin") delete out.guardianNotifications;
     if (!passengerSelf && req.user.role !== "admin" && out.passenger) delete out.passenger.guardianContacts;
     if (ride.driver) out.driverVerification = driverVerification(ride.driver);
+    if (out.driver) { out.driver.photo = out.driver.profilePhoto ? `/api/driver/${out.driver._id}/photo` : null; delete out.driver.profilePhoto; delete out.driver.cnicImages; }
     out.lifecycle = lifecycleOf(ride);
     out.plannedRoute = routeMonitor.plannedLine(ride);   // [[lng, lat], ...] for the map
     if (out.driver?.driverDetails && req.user.role !== "admin") {
@@ -955,3 +951,50 @@ exports.acknowledgeSafePoint = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+// ════════════════════════════════════════
+//  @route  GET /api/rides/live/:token   PUBLIC — Guardian Mode live page (?format=json for data)
+// ════════════════════════════════════════
+exports.liveRide = async (req, res) => {
+  try {
+    const view = await rideShare.publicView(req.params.token);
+    if (!view) return res.status(404).send('<h2 style="font-family:sans-serif;padding:20px">This trip link has expired or does not exist.</h2>');
+    res.set('Cache-Control', 'no-store');
+    if (req.query.format === 'json') return res.json({ success: true, trip: view });
+    res.send(LIVE_PAGE);
+  } catch (error) {
+    res.status(500).send('<h2 style="font-family:sans-serif;padding:20px">Could not load this trip.</h2>');
+  }
+};
+
+const LIVE_PAGE = `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mehfooz Ride — Live trip</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>body{margin:0;font-family:sans-serif;color:#222}#m{height:62vh}#i{padding:14px;line-height:1.5}
+.st{font-weight:800;font-size:17px;margin-bottom:4px}.warn{color:#b71c1c;font-weight:700}.muted{color:#777;font-size:12px}</style>
+</head><body><div id="m"></div><div id="i">Loading…</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+var map=L.map('m').setView([31.52,74.35],13),layers=L.layerGroup().addTo(map),fitted=false;
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'© OpenStreetMap'}).addTo(map);
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+var LABEL={requested:'Looking for a driver',accepted:'Driver on the way to pickup',arrived:'Driver at pickup',otp_verified:'Starting',in_progress:'On the trip',completed:'Arrived safely ✅',cancelled:'Ride cancelled'};
+function load(){fetch(location.pathname+'?format=json',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){
+ var t=d.trip;layers.clearLayers();
+ if(t.plannedRoute&&t.plannedRoute.length>1)L.polyline(t.plannedRoute,{color:'#d81b60',weight:5,opacity:.5}).addTo(layers);
+ if(t.trail&&t.trail.length>1)L.polyline(t.trail,{color:t.offRoute?'#e53935':'#1e88e5',weight:4}).addTo(layers);
+ if(t.pickupAt)L.circleMarker(t.pickupAt,{radius:7,color:'#2e7d32'}).addTo(layers).bindTooltip('Pickup');
+ if(t.dropoffAt)L.circleMarker(t.dropoffAt,{radius:7,color:'#c62828'}).addTo(layers).bindTooltip('Destination');
+ if(t.driverAt)L.marker(t.driverAt).addTo(layers).bindTooltip('Car');
+ if(!fitted){var b=[].concat(t.plannedRoute||[]);if(t.driverAt)b.push(t.driverAt);if(b.length){map.fitBounds(b,{padding:[30,30]});fitted=true}}
+ var p=t.progress;
+ document.getElementById('i').innerHTML='<div class="st">'+esc(t.passenger)+' — '+esc(LABEL[t.status]||t.status)+'</div>'+
+  '<div>'+esc(t.pickup)+' → '+esc(t.dropoff)+'</div>'+
+  (t.driver?'<div>Driver: '+esc(t.driver.name)+' · '+esc(t.driver.vehicle)+' · <b>'+esc(t.driver.licensePlate)+'</b></div>':'')+
+  (p?'<div>'+esc(p.remainingKm)+' km to go · about '+esc(p.etaMin)+' min</div>':'')+
+  (t.offRoute?'<div class="warn">⚠️ The car is off the chosen route right now</div>':'')+
+  (t.sosActivated?'<div class="warn">🆘 She pressed SOS on this trip — call her, or Police 15</div>':'')+
+  (t.driverAtTime?'<div class="muted">Car location updated '+Math.round((Date.now()-new Date(t.driverAtTime))/1000)+' s ago · refreshes every 10 s</div>':'<div class="muted">Live car location appears once the driver is on the way</div>');
+}).catch(function(){})}
+load();setInterval(load,10000);
+</script></body></html>`;

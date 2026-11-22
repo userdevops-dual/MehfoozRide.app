@@ -23,7 +23,8 @@ const permissionDenied = (what) =>
     [{ text: 'Cancel', style: 'cancel' }, { text: 'Open Settings', onPress: () => Linking.openSettings() }]
   );
 
-export default function CnicImagePicker({ label, image, onChange }) {
+// aspect: crop shape, e.g. [1, 1] for a profile photo (default: card shape)
+export default function CnicImagePicker({ label, image, onChange, aspect }) {
   const [busy, setBusy] = useState(false);
 
   const pick = async (source) => {
@@ -35,8 +36,8 @@ export default function CnicImagePicker({ label, image, onChange }) {
       if (!perm.granted) { permissionDenied(source === 'camera' ? 'Camera' : 'Photos'); return; }
 
       const result = source === 'camera'
-        ? await ImagePicker.launchCameraAsync(PICK_OPTIONS)
-        : await ImagePicker.launchImageLibraryAsync(PICK_OPTIONS);
+        ? await ImagePicker.launchCameraAsync({ ...PICK_OPTIONS, ...(aspect ? { aspect } : {}) })
+        : await ImagePicker.launchImageLibraryAsync({ ...PICK_OPTIONS, ...(aspect ? { aspect } : {}) });
       if (result.canceled || !result.assets?.length) return;
 
       const asset = result.assets[0];

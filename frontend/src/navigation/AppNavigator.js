@@ -39,6 +39,7 @@ import GuardianSetupScreen         from '../screens/shared/GuardianSetupScreen';
 
 // Admin
 import AdminDriverApprovalScreen   from '../screens/shared/AdminDriverApprovalScreen';
+import DriverDocumentsScreen       from '../screens/driver/DriverDocumentsScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -105,6 +106,7 @@ export default function AppNavigator() {
         <Stack.Screen name="Profile"        component={ProfileScreen} />
         <Stack.Screen name="RideHistory"    component={RideHistoryScreen} />
         <Stack.Screen name="Wallet"         component={WalletScreen} />
+        <Stack.Screen name="DriverDocuments" component={DriverDocumentsScreen} />
         <Stack.Screen name="Notifications"  component={NotificationsScreen} />
         <Stack.Screen name="GuardianSetup"  component={GuardianSetupScreen} />
 

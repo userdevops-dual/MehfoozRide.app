@@ -82,7 +82,7 @@ export default function DriverHomeScreen({navigation}) {
     {ico:'💰', t:'My Earnings',  d:'Today, weekly, total',         c:'#B07030', bg:C.goldLight,  sc:'Wallet'},
     {ico:'🛡️', t:'Safety',       d:'SOS, fake call, safe points',  c:C.success, bg:C.successBg,  sc:'SafetyCenter'},
     {ico:'👁️', t:'Guardian',     d:'Share live location',          c:C.plum,    bg:C.plumLight,  sc:'GuardianSetup'},
-    {ico:'📄', t:'My Documents', d:'Upload CNIC & license',        c:C.muted,   bg:C.border,     sc:'Profile'},
+    {ico:'📄', t:'My Documents', d:'Licence, vehicle, photo',       c:C.muted,   bg:C.border,     sc:'DriverDocuments'},
   ];
 
   const BOTTOM_TABS = [
@@ -132,7 +132,7 @@ export default function DriverHomeScreen({navigation}) {
         {!user?.isVerified && (
           <View style={styles.verifyBanner}>
             <Text style={styles.verifyText}>⚠️ Your account is pending verification. Upload documents to go online.</Text>
-            <TouchableOpacity onPress={() => navigation.navigate('Profile')}>
+            <TouchableOpacity onPress={() => navigation.navigate('DriverDocuments')}>
               <Text style={{color:C.rose, fontWeight:'700', fontSize:12}}>Upload →</Text>
             </TouchableOpacity>
           </View>

@@ -5,6 +5,8 @@ const { validId } = require('../middleware/validId');
 const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const Ride = require('../models/Ride');
+const Rating = require('../models/Rating');
+const EmergencySession = require('../models/EmergencySession');
 const storage = require('../services/storage');
 
 router.param('id', validId);           // malformed ids → 404
@@ -225,6 +227,53 @@ router.get('/users/:id/cnic/:side', async (req, res) => {
   } catch (e) { res.status(404).json({ success: false, message: 'CNIC photo not found' }); }
 });
 
+// GET /api/admin/users/:id/doc/:kind — driver document photo (license | registration | profile), admins only
+router.get('/users/:id/doc/:kind', async (req, res) => {
+  try {
+    const field = { license: 'driverDetails.licensePhoto', registration: 'driverDetails.registrationPhoto', profile: 'profilePhoto' }[req.params.kind];
+    if (!field) return res.status(400).json({ success: false, message: 'kind must be license, registration or profile' });
+    const user = await User.findById(req.params.id).select(field);
+    const key = field.split('.').reduce((o, k) => o?.[k], user);
+    if (!key || !/^drivers\//.test(key)) return res.status(404).json({ success: false, message: 'Not uploaded' });
+    res.set('Cache-Control', 'no-store');
+    res.sendFile(await storage.read(key));
+  } catch (e) { res.status(404).json({ success: false, message: 'Photo not found' }); }
+});
+
+// GET /api/admin/complaints?status=pending|reviewed|resolved|dismissed
+router.get('/complaints', async (req, res) => {
+  try {
+    const q = { hasComplaint: true };
+    if (['pending', 'reviewed', 'resolved', 'dismissed'].includes(req.query.status)) q.complaintStatus = req.query.status;
+    const complaints = await Rating.find(q)
+      .populate('ratedBy', 'name phone')
+      .populate('ratedUser', 'name phone averageRating totalRatings driverDetails.licensePlate driverDetails.vehicleMake driverDetails.vehicleModel')
+      .populate('ride', 'pickupLocation.address dropoffLocation.address completedAt routeDeviated sosActivated')
+      .sort({ createdAt: -1 }).limit(100).lean();
+    res.json({ success: true, count: complaints.length, complaints });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+// PUT /api/admin/complaints/:id  { status, adminNotes }
+router.put('/complaints/:id', async (req, res) => {
+  try {
+    const { status, adminNotes } = req.body || {};
+    if (!['reviewed', 'resolved', 'dismissed', 'pending'].includes(status)) return res.status(400).json({ success: false, message: 'Invalid status' });
+    const c = await Rating.findOneAndUpdate({ _id: req.params.id, hasComplaint: true },
+      { complaintStatus: status, adminNotes: String(adminNotes || '').slice(0, 1000) }, { new: true });
+    if (!c) return res.status(404).json({ success: false, message: 'Complaint not found' });
+    res.json({ success: true, complaint: c });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
+
+// GET /api/admin/emergencies?status=active|resolved — SOS sessions with the full incident payload
+router.get('/emergencies', async (req, res) => {
+  try {
+    const q = ['active', 'resolved'].includes(req.query.status) ? { status: req.query.status } : {};
+    const sessions = await EmergencySession.find(q).select('-locations').sort({ startedAt: -1 }).limit(100).lean();
+    res.json({ success: true, count: sessions.length, sessions });
+  } catch (e) { res.status(500).json({ success: false, message: e.message }); }
+});
 // GET /api/admin/drivers/approved — all currently verified active drivers
 router.get('/drivers/approved', async (req, res) => {
   try {

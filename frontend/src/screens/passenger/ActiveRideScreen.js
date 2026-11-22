@@ -5,12 +5,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
-  Alert, Modal, ScrollView,
+  Alert, Modal, ScrollView, Share, Image,
 } from 'react-native';
 import OSMMap from '../../components/OSMMap';
 import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
-import { rideAPI } from '../../services/api';
+import { rideAPI, fullUrl, authImage } from '../../services/api';
 import {
   onEvent, onDriverLocation, onRouteDeviation, onRideStarted, onRideFinished, onRideCancelled,
   onGuardianNotified, onOTPWarning, onFakeRideAlert, offEvent,
@@ -35,6 +35,7 @@ export default function ActiveRideScreen({ navigation, route }) {
   const [liveFare,          setLiveFare]           = useState(ride?.farePerPassenger || ride?.estimatedFare || null);
   const [distanceTravelled, setDistanceTravelled]  = useState(0);
   const [safePoints,        setSafePoints]         = useState([]);   // marked on this ride
+  const [shareLink,         setShareLink]          = useState(ride?.shareLink || null);   // Guardian Mode live link
   const [guardianBanner,    setGuardianBanner]     = useState(null);
   // Route monitoring — the server compares the driver's GPS with the route chosen at booking
   const [offRoute,          setOffRoute]           = useState(null);   // { offRouteM } while off-route
@@ -84,6 +85,7 @@ export default function ActiveRideScreen({ navigation, route }) {
       if (r.routeDeviationActive) setOffRoute({ offRouteM: r.lastProgress?.offRouteM });
       if (r.lastProgress?.remainingKm != null) setProgress(r.lastProgress);
       setSafePoints(r.safePoints || []);
+      if (r.shareLink) setShareLink(r.shareLink);
       if (status === 'in_progress' && !startTime.current) {
         startTime.current = res.ride.startedAt ? new Date(res.ride.startedAt).getTime() : Date.now();
         setRideTime(Math.max(0, Math.round((Date.now() - startTime.current) / 1000)));
@@ -210,6 +212,17 @@ export default function ActiveRideScreen({ navigation, route }) {
 
   // SOS screen starts the emergency session on the server (location, ride,
   // driver, vehicle, route and contacts are captured there) and keeps GPS live
+  // Guardian Mode: send the live trip link from her own phone (WhatsApp, SMS…)
+  const shareTrip = () => {
+    if (!shareLink) { Alert.alert('Link not ready', 'Please try again in a moment.'); return; }
+    const d = driver || {};
+    Share.share({
+      message: `🌸 I'm on a Mehfooz Ride to ${ride?.dropoffLocation?.address || 'my destination'}`
+        + (d.name ? ` with ${d.name}${d.licensePlate ? ` (${d.licensePlate})` : ''}` : '')
+        + `. Follow my trip live: ${fullUrl(shareLink)}`,
+    }).catch(() => {});
+  };
+
   const handleSOS = () => {
     Alert.alert('🆘 SOS EMERGENCY', 'Start an emergency session? Your contacts get your live location and the dialer opens for Police 15.', [
       { text: 'Cancel', style: 'cancel' },
@@ -378,7 +391,7 @@ export default function ActiveRideScreen({ navigation, route }) {
           { ico: '🆘',  lbl: 'SOS',       color: C.danger,  bg: C.dangerBg,  fn: handleSOS },
           { ico: '🤙',  lbl: 'Fake Call', color: '#D4376A', bg: '#FFE4EF',   fn: () => navigation.navigate('FakeCall') },
           { ico: '📍',  lbl: 'Safe Drop', color: C.info,    bg: C.infoBg,    fn: () => navigation.navigate('SafePoints', { rideId: ride?._id }) },
-          { ico: '👁️', lbl: 'Guardian',  color: C.plum,    bg: C.plumLight, fn: () => navigation.navigate('GuardianSetup') },
+          { ico: '📤', lbl: 'Share trip', color: C.plum,    bg: C.plumLight, fn: shareTrip },
         ].map(b => (
           <TouchableOpacity key={b.lbl} onPress={b.fn}
             style={[styles.actionBtn, { backgroundColor: b.bg }]}>

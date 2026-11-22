@@ -11,36 +11,42 @@ const User = require('../models/User');
 const Ride = require('../models/Ride');
 const routeMonitor = require('../services/routeMonitor');
 const emergency    = require('../services/emergency');
+const rideShare    = require('../services/rideShare');
 
-// ── Guardian Notification Helper ─────────────────────────────────────────
-// In production: call Twilio SMS / WhatsApp API here
-const notifyGuardians = (guardianContacts, event, data) => {
-  const active = (guardianContacts || []).filter(c => c.isActive);
-  if (active.length === 0) return [];
-
-  const messages = {
-    ride_booked:      (d) => `🌸 [MehfoozRide] ${d.passengerName} has booked a ride. Driver will be assigned shortly.`,
-    driver_assigned:  (d) => `🚗 [MehfoozRide] Driver ${d.driverName} (${d.licensePlate}) is on the way to pick up ${d.passengerName}.`,
-    ride_started:     (d) => `✅ [MehfoozRide] ${d.passengerName}'s ride has STARTED with ${d.driverName} (${d.vehicle}). Pickup: ${d.pickup}`,
-    ride_completed:   (d) => `🏁 [MehfoozRide] ${d.passengerName} has ARRIVED SAFELY at ${d.dropoff}. Fare: Rs.${d.fare}`,
-    sos_alert:        (d) => `🆘 EMERGENCY! ${d.passengerName} activated SOS. Driver: ${d.driverName} | Plate: ${d.licensePlate}. Last known: ${JSON.stringify(d.coordinates)}`,
-    route_deviation:  (d) => `⚠️ [MehfoozRide] ROUTE ALERT: ${d.passengerName}'s driver has deviated from the planned route. Tap SOS if needed.`,
-  };
-
-  const msg = messages[event] ? messages[event](data) : `[MehfoozRide] Update: ${event}`;
-
-  active.forEach(c => {
-    // In production: Twilio or Firebase SMS
-    console.log(`📱 SMS to ${c.name} (${c.phone}): ${msg}`);
-  });
-
-  return active.map(c => ({ name: c.name, phone: c.phone }));
-};
+// Guardian notifications live in services/rideShare.js (rides) and services/emergency.js (SOS)
 
 const isValidCoordinates = (c) =>
   Array.isArray(c) && c.length === 2 && c.every(n => typeof n === 'number' && Number.isFinite(n));
 
 const sameId = (a, b) => !!a && !!b && a.toString() === b.toString();
+
+// Driver → pickup ETA from the real road route (routing service), refreshed at
+// most every 45 s per ride; between refreshes it is scaled by how much closer
+// the driver got. Falls back to a labelled straight-line estimate if routing fails.
+const geo = require('../services/geo');
+const etaCache = new Map();   // rideId → { at, km, min, straightKm }
+const pickupEta = async (ride, coordinates) => {
+  const id = String(ride._id);
+  const straightKm = routeMonitor.distM(coordinates, ride.pickupLocation.coordinates) / 1000;
+  let c = etaCache.get(id);
+  if (!c || Date.now() - c.at > 45000) {
+    try {
+      const [lng, lat] = coordinates, [plng, plat] = ride.pickupLocation.coordinates;
+      const r = (await geo.routes({ lat, lng }, { lat: plat, lng: plng }))[0];
+      c = { at: Date.now(), km: r.distanceKm, min: r.durationMin, straightKm, source: 'road' };
+    } catch {
+      c = { at: Date.now(), km: straightKm * 1.3, min: straightKm * 1.3 * 3, straightKm, source: 'estimate' };
+    }
+    etaCache.set(id, c);
+    if (etaCache.size > 2000) etaCache.delete(etaCache.keys().next().value);
+  }
+  const scale = c.straightKm > 0.05 ? Math.min(1.5, straightKm / c.straightKm) : 1;
+  return {
+    distanceKm: Math.round(c.km * scale * 10) / 10,
+    etaMin: Math.max(1, Math.round(c.min * scale)),
+    source: c.source,
+  };
+};
 
 // Drivers who lost their connection: userId → timer that sets them offline
 const OFFLINE_GRACE_SECONDS = 60;
@@ -110,10 +116,9 @@ const initSocket = (io) => {
 
           // Before pickup: how far the driver is from the passenger
           if (ride.status !== 'in_progress') {
-            const km = routeMonitor.distM(coordinates, ride.pickupLocation.coordinates) / 1000;
             io.to(passengerRoom).emit('driver:location:update', {
               rideId: ride._id, coordinates, timestamp: now, status: ride.status,
-              toPickup: { distanceKm: Math.round(km * 10) / 10, etaMin: Math.max(1, Math.round(km * 1.3 * 3)) },
+              toPickup: await pickupEta(ride, coordinates),
             });
             continue;
           }
@@ -157,15 +162,18 @@ const initSocket = (io) => {
             };
             io.to(passengerRoom).emit('ride:route-deviation', alert);
             io.to('admins').emit('admin:route-deviation', { ...alert, passengerName: ride.passenger.name });
-            // Guardians are told once per trip, on the first deviation
+            // Guardians are told once per trip, on the first deviation (with the live link)
             if (!ride.routeDeviated) {
-              const notified = notifyGuardians(ride.passenger.guardianContacts, 'route_deviation', { passengerName: ride.passenger.name, coordinates });
-              if (notified.length > 0) {
+              rideShare.notifyGuardians(ride._id, 'route_deviation').then(results => {
+                if (!results.length) return;
+                const sent = results.filter(x => x.status === 'sent').length;
                 io.to(passengerRoom).emit('guardian:notified', {
                   event: 'route_deviation',
-                  message: `Your guardian contacts (${notified.length}) were alerted about the route change (demo: logged on the server, no SMS sent).`,
+                  message: sent
+                    ? `Your guardians (${sent}) were sent your live trip link.`
+                    : `Demo mode: your guardians' alert was logged, not sent. Use "Share trip" to send them your link.`,
                 });
-              }
+              });
             }
           } else if (event === 'back_on_route') {
             io.to(passengerRoom).emit('ride:route-deviation', {
@@ -211,19 +219,17 @@ const initSocket = (io) => {
           startTime: ride.startedAt,
         });
 
-        const notified = notifyGuardians(ride.passenger.guardianContacts, 'ride_started', {
-          passengerName: ride.passenger.name,
-          driverName:    ride.driver?.name || 'Driver',
-          vehicle:       `${ride.driver?.driverDetails?.vehicleMake || ''} ${ride.driver?.driverDetails?.vehicleModel || ''}`.trim(),
-          licensePlate:  ride.driver?.driverDetails?.licensePlate || 'N/A',
-          pickup:        ride.pickupLocation?.address || '',
-        });
-
+        // Guardians are notified by the REST verify-otp endpoint (services/rideShare.js);
+        // here the passenger just sees what actually happened.
+        const latest = (await Ride.findById(rideId).select('guardianNotifications').lean())?.guardianNotifications?.filter(n => n.event === 'ride_started').pop();
+        const notified = latest?.contacts || [];
         if (notified.length > 0) {
           io.to(passengerRoom).emit('guardian:notified', {
             event:   'ride_started',
-            message: `🛡️ ${notified.length} guardian contact(s) notified your ride has started.`,
-            contacts: notified,
+            message: notified.some(c => c.status === 'sent')
+              ? `🛡️ ${notified.filter(c => c.status === 'sent').length} guardian(s) were sent your live trip link.`
+              : `🛡️ Demo mode: the guardian message was logged, not sent. Tap "Share trip" to send your live link yourself.`,
+            contacts: notified.map(c => ({ name: c.name, status: c.status })),
           });
         }
       } catch (err) {
@@ -244,12 +250,6 @@ const initSocket = (io) => {
           farePerPassenger: ride.farePerPassenger,
           durationMinutes:  ride.durationMinutes,
           message: 'You have arrived safely! 🌸 Please rate your driver.',
-        });
-
-        notifyGuardians(ride.passenger.guardianContacts, 'ride_completed', {
-          passengerName: ride.passenger.name,
-          dropoff:       ride.dropoffLocation?.address || 'destination',
-          fare:          ride.actualFare || 0,
         });
       } catch (err) {
         console.error('Ride completed socket error:', err.message);
