@@ -153,6 +153,16 @@ Admin panel: driver approvals, background checks, SOS incidents, fake rides, liv
 - **History** — `GET /api/rides/my-rides?status=&page=&limit=`: date, pickup, destination, driver & vehicle (or passenger name for drivers), fare, distance, duration, status, rating and payment. Drivers see their commission and earning; passengers never see driver documents; drivers never see passenger phone numbers or comments.
 - **Driver statistics** — `GET /api/driver/stats`: earnings after commission (today, last 7 days, month, total), 7-day chart, cash still to collect, rides, distance, time, pooled rides, acceptance rate, cancellations, rating with categories and recent reviews — all computed from real rides.
 
+### Security & production readiness (Phase 7)
+
+- **Backend hardening** (`backend/middleware/security.js`): security headers, NoSQL-operator stripping (`$ne`, `$gt`…), 100 KB JSON limit, malformed ids → 404, and rate limits — 10 wrong logins / 15 min per account+IP, 5 OTP requests / 15 min per number, plus a general 300 requests/min per IP. With `NODE_ENV=production` a weak `JWT_SECRET` stops the server and internal error text is never sent to the app.
+- **CORS** — the mobile app needs no CORS; browsers are allowed only from `CORS_ORIGINS` (any localhost in development).
+- **Private data** — `/auth/me` no longer returns document storage keys or fraud counters.
+- **App configuration** — the backend address comes from `EXPO_PUBLIC_BACKEND_URL` in the project's `.env` (copy `.env.example`; default is the emulator address). For a real phone on the same Wi-Fi use `http://<computer IP>:5000`, then restart Metro with `--clear`. `EXPO_PUBLIC_DEMO_MODE=false` hides the demo login shortcuts (they are hidden automatically in release builds).
+- **Database indexes** for history, matching, stats and one-rating-per-ride.
+- **Test data** — the automated tests create rides on the demo accounts. Preview with `node scripts/cleanup-test-data.js` and delete with `--apply` (recalculates ride counts and ratings).
+- **Tests** — `node tests/phase7.security.test.js` (28 checks) plus Phases 1–6.
+
 After pulling Phase 5, rebuild the app once (`npx expo run:android`) — it adds `expo-speech` and `expo-audio`.
 
 ---

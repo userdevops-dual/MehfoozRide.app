@@ -1,11 +1,14 @@
 // routes/adminRoutes.js — Admin dashboard: approvals, background checks, SOS, fake rides
 const express = require('express');
 const router  = express.Router();
+const { validId } = require('../middleware/validId');
 const { protect, authorize } = require('../middleware/auth');
 const User = require('../models/User');
 const Ride = require('../models/Ride');
 const storage = require('../services/storage');
 
+router.param('id', validId);           // malformed ids → 404
+router.param('pointId', validId);
 router.use(protect);
 router.use(authorize('admin'));
 

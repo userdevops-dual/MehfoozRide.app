@@ -100,4 +100,7 @@ const RatingSchema = new mongoose.Schema(
   }
 );
 
+RatingSchema.index({ ratedUser: 1, createdAt: -1 });
+RatingSchema.index({ ride: 1 }, { unique: true });   // one rating per ride
+
 module.exports = mongoose.model("Rating", RatingSchema);

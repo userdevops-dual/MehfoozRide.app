@@ -8,6 +8,7 @@ import LinearGradient from 'react-native-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
 import { Input } from '../../components/UI';
 import { C, GRAD } from '../../utils/theme';
+import { DEMO_MODE } from '../../config/appMode';
 
 export default function LoginScreen({ navigation }) {
   const { login } = useAuth();
@@ -99,8 +100,8 @@ export default function LoginScreen({ navigation }) {
             </TouchableOpacity>
           </View>
 
-          {/* Demo account quick-fill */}
-          <View style={styles.demoBox}>
+          {/* Demo account quick-fill — demo builds only, never in a release */}
+          {DEMO_MODE && <View style={styles.demoBox}>
             <Text style={styles.demoTitle}>🧪 Demo Quick Login</Text>
             <View style={styles.demoRow}>
               {[
@@ -120,7 +121,7 @@ export default function LoginScreen({ navigation }) {
               <Text style={styles.credText}>🚗 Driver:    fatima@demo.com / password123</Text>
               <Text style={styles.credText}>⚙️ Admin:     admin@mehfooz.com / admin123</Text>
             </View>
-          </View>
+          </View>}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>

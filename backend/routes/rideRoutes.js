@@ -1,5 +1,6 @@
 const express = require('express');
 const router  = express.Router();
+const { validId } = require('../middleware/validId');
 const {
   bookRide, estimateRide, acceptRide, declineRide, driverArrived, verifyOTP,
   completeRide, cancelRide, submitRating,
@@ -8,6 +9,8 @@ const {
 } = require('../controllers/rideController');
 const { protect } = require('../middleware/auth');
 
+router.param('id', validId);           // malformed ids → 404
+router.param('pointId', validId);
 router.use(protect);
 
 router.post('/estimate',          estimateRide);  // routes + fare before booking

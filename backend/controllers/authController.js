@@ -331,7 +331,11 @@ exports.login = async (req, res) => {
 // ════════════════════════════════════════
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id);
+    const user = (await User.findById(req.user.id))?.toObject();
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
+    // Internal fields never go to the app (document storage keys, fraud counters)
+    if (user.driverDetails) for (const k of ["cnicPhoto", "licensePhoto", "registrationPhoto", "backgroundNotes"]) delete user.driverDetails[k];
+    delete user.otpFailures; delete user.otpFailureFlagged; delete user.__v;
     res.status(200).json({ success: true, user });
   } catch (error) {
     res.status(500).json({ success: false, message: "Server error" });

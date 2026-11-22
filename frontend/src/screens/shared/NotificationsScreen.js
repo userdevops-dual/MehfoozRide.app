@@ -1,170 +1,123 @@
 // frontend/src/screens/shared/NotificationsScreen.js
-import React, { useState } from 'react';
-import {
-  View, Text, StyleSheet, TouchableOpacity,
-  ScrollView, Switch,
-} from 'react-native';
+// Recent activity built from the user's real rides (completed, cancelled,
+// waiting for a rating, payment status). Push notifications are not part of
+// this version, so there are no fake alerts or promotions here.
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, RefreshControl } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
+import { rideAPI } from '../../services/api';
+import { useAuth } from '../../context/AuthContext';
 import { C } from '../../utils/theme';
 
-const DEMO_NOTIFS = [
-  { id:'n1', type:'ride',     title:'Ride Completed ✅',             body:'Your ride from DHA to Gulberg is complete. Fare: Rs. 280.',      time:'10 min ago',  read:false },
-  { id:'n2', type:'safety',   title:'Guardian Mode Active 👁️',      body:'Your guardian contacts are notified for your upcoming ride.',    time:'1 hr ago',   read:false },
-  { id:'n3', type:'promo',    title:'10% Off Your Next Ride 🎉',     body:'Use code MEHFOOZ10 to get 10% discount on your next booking.',  time:'2 hrs ago',  read:true  },
-  { id:'n4', type:'ride',     title:'Driver is 3 min away 🚗',       body:'Your driver Fatima Malik is en route. Stay ready!',             time:'Yesterday',  read:true  },
-  { id:'n5', type:'system',   title:'Account Verified ✅',           body:'Congratulations! Your Mehfooz Ride account is fully verified.', time:'2 days ago', read:true  },
-  { id:'n6', type:'safety',   title:'SOS Alert Sent 🆘',            body:'Your emergency contacts were notified with your live location.', time:'3 days ago', read:true  },
-  { id:'n7', type:'ride',     title:'Rate Your Driver ⭐',          body:'How was your ride with Sara Ahmed? Share your feedback.',       time:'4 days ago', read:true  },
-  { id:'n8', type:'promo',    title:'Refer a Friend 👯‍♀️',          body:'Invite female friends and both get Rs. 100 wallet credit.',     time:'5 days ago', read:true  },
-];
-
 const TYPE_CONFIG = {
-  ride:   { bg: C.rosePale,    icon: '🚗', color: C.rose    },
-  safety: { bg: C.dangerBg,    icon: '🛡️', color: C.danger  },
-  promo:  { bg: C.goldLight,   icon: '🎁', color: '#A07030'  },
-  system: { bg: C.successBg,   icon: '⚙️', color: C.success },
+  ride:   { bg: C.rosePale,  icon: '🚗', color: C.rose    },
+  safety: { bg: C.dangerBg,  icon: '🛡️', color: C.danger  },
+  rate:   { bg: C.goldLight, icon: '⭐', color: '#A07030' },
+  system: { bg: C.successBg, icon: '💵', color: C.success },
+};
+const ago = (d) => {
+  const m = Math.round((Date.now() - new Date(d).getTime()) / 60000);
+  if (m < 60) return `${Math.max(1, m)} min ago`;
+  if (m < 1440) return `${Math.round(m / 60)} h ago`;
+  return new Date(d).toLocaleDateString('en-PK', { day: 'numeric', month: 'short' });
+};
+
+// One ride → its activity items (newest first overall)
+const itemsFor = (r, asDriver) => {
+  const out = [];
+  const where = `${r.pickup} → ${r.dropoff}`;
+  if (r.status === 'completed') {
+    out.push({ id: `${r._id}-done`, type: 'ride', title: 'Ride completed ✅', body: `${where} · ${asDriver ? `you earned Rs ${r.settlement?.driverEarning ?? r.fare}` : `fare Rs ${r.fare}`}`, at: r.date, ride: r });
+    if (!asDriver && !r.rating) out.push({ id: `${r._id}-rate`, type: 'rate', title: 'Rate your ride ⭐', body: `How was your ride with ${r.driver?.name || 'your driver'}?`, at: r.date, ride: r, action: 'rate' });
+    if (asDriver && r.settlement?.status === 'due') out.push({ id: `${r._id}-cash`, type: 'system', title: 'Cash to collect 💵', body: `Rs ${r.settlement.payable} from ${r.passenger?.name || 'passenger'} — mark it in My Earnings`, at: r.date, action: 'wallet' });
+  } else if (r.status === 'cancelled') {
+    out.push({ id: `${r._id}-cx`, type: 'ride', title: 'Ride cancelled', body: `${where}${r.cancelReason ? ` · ${r.cancelReason}` : ''}`, at: r.date });
+  }
+  if (r.sosActivated) out.push({ id: `${r._id}-sos`, type: 'safety', title: 'SOS was used on this ride 🆘', body: where, at: r.date });
+  if (r.routeDeviated) out.push({ id: `${r._id}-dev`, type: 'safety', title: 'Route change recorded ⚠️', body: `The driver left the chosen route on ${where}`, at: r.date });
+  return out;
 };
 
 export default function NotificationsScreen({ navigation }) {
-  const [notifs, setNotifs] = useState(DEMO_NOTIFS);
-  const [settings, setSettings] = useState({
-    rideUpdates:   true,
-    safetyAlerts:  true,
-    promotions:    false,
-    guardianMode:  true,
-  });
+  const { user, mode } = useAuth();
+  const asDriver = user?.role === 'driver' && mode !== 'passenger';
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const unreadCount = notifs.filter(n => !n.read).length;
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      const res = await rideAPI.getMyRides({ ...(asDriver ? {} : { as: 'passenger' }), limit: 20 });
+      setItems(res.rides.flatMap(r => itemsFor(r, asDriver)).sort((a, b) => new Date(b.at) - new Date(a.at)));
+    } catch (e) {
+      setError(e.response?.data?.message || 'Could not load. Pull down to retry.');
+    }
+    setRefreshing(false);
+  }, [asDriver]);
+  useEffect(() => { load(); }, []);
 
-  const markAllRead = () => {
-    setNotifs(prev => prev.map(n => ({ ...n, read: true })));
-  };
-
-  const markRead = (id) => {
-    setNotifs(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
-  };
-
-  const deleteNotif = (id) => {
-    setNotifs(prev => prev.filter(n => n.id !== id));
-  };
-
-  const toggleSetting = (key) => {
-    setSettings(prev => ({ ...prev, [key]: !prev[key] }));
+  const open = (n) => {
+    if (n.action === 'rate') navigation.navigate('RideComplete', { ride: { _id: n.ride._id } });
+    else if (n.action === 'wallet') navigation.navigate('Wallet');
+    else navigation.navigate('RideHistory');
   };
 
   return (
     <View style={s.screen}>
-      {/* ── Header ── */}
       <LinearGradient colors={['#5C1448', '#C84B7A']} style={s.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={s.backBtn}>
           <Text style={s.backText}>← Back</Text>
         </TouchableOpacity>
-        <View style={s.headerRow}>
-          <Text style={s.title}>Notifications 🔔</Text>
-          {unreadCount > 0 && (
-            <View style={s.badge}>
-              <Text style={s.badgeText}>{unreadCount}</Text>
-            </View>
-          )}
-        </View>
-        {unreadCount > 0 && (
-          <TouchableOpacity onPress={markAllRead} style={s.markAllBtn}>
-            <Text style={s.markAllText}>✓ Mark all as read</Text>
-          </TouchableOpacity>
-        )}
+        <Text style={s.title}>Activity 🔔</Text>
+        <Text style={s.sub}>From your last 20 rides</Text>
       </LinearGradient>
 
-      <ScrollView style={s.body} showsVerticalScrollIndicator={false}>
-
-        {/* ── Notification List ── */}
-        {notifs.length === 0 ? (
+      <ScrollView style={s.body} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); load(); }} />}>
+        {items === null && !error && <ActivityIndicator color={C.rose} style={{ marginTop: 40 }} />}
+        {!!error && <Text style={s.emptyText}>{error}</Text>}
+        {items?.length === 0 && (
           <View style={s.emptyBox}>
             <Text style={{ fontSize: 52 }}>🔕</Text>
-            <Text style={s.emptyText}>No notifications yet</Text>
+            <Text style={s.emptyText}>Nothing yet — your ride updates will appear here.</Text>
           </View>
-        ) : (
-          <>
-            {/* Unread first */}
-            {notifs.filter(n => !n.read).length > 0 && (
-              <Text style={s.sectionLabel}>NEW</Text>
-            )}
-            {notifs.filter(n => !n.read).map(n => (
-              <NotifCard key={n.id} notif={n} onRead={markRead} onDelete={deleteNotif} />
-            ))}
-
-            {notifs.filter(n => n.read).length > 0 && (
-              <Text style={s.sectionLabel}>EARLIER</Text>
-            )}
-            {notifs.filter(n => n.read).map(n => (
-              <NotifCard key={n.id} notif={n} onRead={markRead} onDelete={deleteNotif} />
-            ))}
-          </>
         )}
-
-        {/* ── Notification Preferences ── */}
-        <View style={s.card}>
-          <Text style={s.cardTitle}>⚙️ Notification Preferences</Text>
-          {[
-            { key: 'rideUpdates',  label: 'Ride Updates',     sub: 'Driver found, arrival, completion' },
-            { key: 'safetyAlerts', label: 'Safety Alerts',    sub: 'SOS, route deviation, guardian mode' },
-            { key: 'promotions',   label: 'Promotions',       sub: 'Offers, discounts, referral rewards' },
-            { key: 'guardianMode', label: 'Guardian Sharing', sub: 'Notify contacts when ride starts' },
-          ].map(item => (
-            <View key={item.key} style={s.settingRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={s.settingLabel}>{item.label}</Text>
-                <Text style={s.settingSub}>{item.sub}</Text>
-              </View>
-              <Switch
-                value={settings[item.key]}
-                onValueChange={() => toggleSetting(item.key)}
-                trackColor={{ false: '#DDD', true: C.rose }}
-                thumbColor="#fff"
-              />
-            </View>
-          ))}
-        </View>
-
+        {items?.map(n => <NotifCard key={n.id} notif={n} onPress={() => open(n)} />)}
         <View style={{ height: 40 }} />
       </ScrollView>
     </View>
   );
 }
-
 // ── Single notification card ────────────────────────────────────────────────
-function NotifCard({ notif, onRead, onDelete }) {
+function NotifCard({ notif, onPress }) {
   const cfg = TYPE_CONFIG[notif.type] || TYPE_CONFIG.system;
   return (
     <TouchableOpacity
-      onPress={() => onRead(notif.id)}
-      style={[s.notifCard, !notif.read && s.notifCardUnread]}>
+      onPress={onPress}
+      style={s.notifCard}>
       <View style={[s.notifIcon, { backgroundColor: cfg.bg }]}>
         <Text style={{ fontSize: 20 }}>{cfg.icon}</Text>
       </View>
       <View style={{ flex: 1 }}>
-        <Text style={[s.notifTitle, !notif.read && { color: C.plum }]}>
+        <Text style={s.notifTitle}>
           {notif.title}
         </Text>
         <Text style={s.notifBody} numberOfLines={2}>{notif.body}</Text>
-        <Text style={s.notifTime}>{notif.time}</Text>
+        <Text style={s.notifTime}>{ago(notif.at)}</Text>
       </View>
-      <View style={{ gap: 6, alignItems: 'center' }}>
-        {!notif.read && <View style={s.unreadDot} />}
-        <TouchableOpacity onPress={() => onDelete(notif.id)} hitSlop={8}>
-          <Text style={{ color: C.muted, fontSize: 16 }}>✕</Text>
-        </TouchableOpacity>
-      </View>
+      <Text style={{ color: C.muted, fontSize: 16 }}>›</Text>
     </TouchableOpacity>
   );
 }
 
 const s = StyleSheet.create({
   screen:         { flex: 1, backgroundColor: C.bg },
-  header:         { padding: 20, paddingBottom: 24 },
+  header:         { padding: 20, paddingTop: 46, paddingBottom: 24 },
   backBtn:        { backgroundColor: 'rgba(255,255,255,0.2)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, alignSelf: 'flex-start', marginBottom: 12 },
   backText:       { color: '#fff', fontWeight: '600', fontSize: 13 },
   headerRow:      { flexDirection: 'row', alignItems: 'center', gap: 10 },
   title:          { color: '#fff', fontSize: 22, fontWeight: '800' },
+  sub:            { color: 'rgba(255,255,255,0.75)', fontSize: 12, marginTop: 4 },
   badge:          { backgroundColor: '#fff', borderRadius: 12, minWidth: 26, height: 26, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   badgeText:      { color: C.rose, fontWeight: '800', fontSize: 13 },
   markAllBtn:     { backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 6, alignSelf: 'flex-start', marginTop: 10 },

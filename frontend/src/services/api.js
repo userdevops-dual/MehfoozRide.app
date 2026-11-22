@@ -1,7 +1,10 @@
 // frontend/src/services/api.js
 import axios from 'axios';
 
-export const BACKEND_URL = 'http://10.0.2.2:5000';  // Android emulator; use your IP for device
+// Backend address. Set EXPO_PUBLIC_BACKEND_URL in the project's .env (see .env.example),
+// e.g. http://192.168.1.20:5000 for a real phone on the same Wi-Fi, or your HTTPS server.
+// Without it the Android emulator's address for this computer is used.
+export const BACKEND_URL = (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://10.0.2.2:5000').replace(/\/+$/, '');
 
 const api = axios.create({
   baseURL: `${BACKEND_URL}/api`,

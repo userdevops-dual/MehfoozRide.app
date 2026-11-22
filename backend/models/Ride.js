@@ -161,5 +161,11 @@ const RideSchema = new mongoose.Schema(
 
 RideSchema.index({ "pickupLocation.coordinates": "2dsphere" });
 RideSchema.index({ "dropoffLocation.coordinates": "2dsphere" });
+// History, active-ride checks, matching and stats
+RideSchema.index({ passenger: 1, createdAt: -1 });
+RideSchema.index({ driver: 1, status: 1, completedAt: -1 });
+RideSchema.index({ status: 1, requestExpiresAt: 1 });
+RideSchema.index({ pool: 1, status: 1 });
+RideSchema.index({ offeredTo: 1 });
 
 module.exports = mongoose.model("Ride", RideSchema);
