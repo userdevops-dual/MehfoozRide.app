@@ -52,7 +52,8 @@ const EmergencySessionSchema = new mongoose.Schema({
   // What happened
   contactNotifications: [{
     name: String, phone: String, relation: String, channel: String,
-    status: { type: String, enum: ["simulated", "sent", "failed", "not_configured"] },
+    // channel "sms" = from the server (demo/Twilio); "device_sms" = from the passenger's own phone
+    status: { type: String, enum: ["simulated", "sent", "failed", "not_configured", "unknown", "unavailable"] },
     detail: String, at: Date,
   }],
   police: {

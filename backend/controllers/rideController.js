@@ -998,3 +998,25 @@ function load(){fetch(location.pathname+'?format=json',{cache:'no-store'}).then(
 }).catch(function(){})}
 load();setInterval(load,10000);
 </script></body></html>`;
+
+// ════════════════════════════════════════
+//  @route  POST /api/rides/:id/guardian-sms   (passenger)  { event, results: [{ name, phone, status, reason }] }
+//  Records the trip SMS her phone sent to her guardians from her own SIM.
+// ════════════════════════════════════════
+exports.recordGuardianSms = async (req, res) => {
+  try {
+    const event = ['ride_started', 'route_deviation', 'ride_completed'].includes(req.body?.event) ? req.body.event : null;
+    if (!event) return res.status(400).json({ success: false, message: 'Unknown event' });
+    const contacts = (Array.isArray(req.body?.results) ? req.body.results : []).slice(0, 10).map(r => ({
+      name: String(r.name || '').slice(0, 60), phone: String(r.phone || '').slice(0, 20),
+      status: ['sent', 'failed', 'unknown', 'unavailable'].includes(r.status) ? r.status : 'unknown',
+      detail: `device_sms${r.reason ? `: ${String(r.reason).slice(0, 80)}` : ''}`,
+    }));
+    const ride = await Ride.findOneAndUpdate({ _id: req.params.id, passenger: req.user.id },
+      { $push: { guardianNotifications: { event: `${event}_device_sms`, sentAt: new Date(), contacts } } }, { new: true });
+    if (!ride) return res.status(404).json({ success: false, message: 'Ride not found' });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

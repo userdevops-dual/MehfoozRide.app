@@ -7,6 +7,7 @@ import {
 import LinearGradient from 'react-native-linear-gradient';
 import { authAPI } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
+import { sendSmsToContacts, reasonText, smsSupported } from '../../services/sms';
 import { C, GRAD } from '../../utils/theme';
 
 const MAX_CONTACTS = 5;
@@ -45,6 +46,23 @@ export default function GuardianSetupScreen({ navigation }) {
   const removeContact = (index) => {
     if (contacts.length === 1) return;
     setContacts(contacts.filter((_, i) => i !== index));
+  };
+
+  const [testing, setTesting] = useState(false);
+  // Sends a short test text to the SAVED contacts (save first) from her own SIM
+  const sendTest = async () => {
+    const saved = (user?.guardianContacts || []).filter(c => c.phone);
+    if (!saved.length) { Alert.alert('Save contacts first', 'Add and save at least one contact, then send a test.'); return; }
+    if (!smsSupported()) { Alert.alert('SMS not available', 'This phone (or this app build) cannot send SMS. Emulators usually cannot either.'); return; }
+    Alert.alert('Send test SMS?', `A short test message goes to ${saved.length} contact(s) from your SIM. Normal SMS charges apply.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Send', onPress: async () => {
+        setTesting(true);
+        const results = await sendSmsToContacts(saved, `Test from Mehfooz Ride: ${user?.name || 'I'} added you as an emergency contact. In an emergency you will get my location by SMS.`);
+        setTesting(false);
+        Alert.alert('Test SMS', results.map(r => `• ${r.name}: ${r.status === 'sent' ? 'sent ✓' : `not sent (${reasonText(r.reason)})`}`).join('\n'));
+      } },
+    ]);
   };
 
   const handleSave = async () => {
@@ -107,10 +125,10 @@ export default function GuardianSetupScreen({ navigation }) {
         <View style={styles.howCard}>
           <Text style={styles.sectionTitle}>🛡️ How Guardian Mode Works</Text>
           {[
-            'When you press SOS, an emergency session starts with your live location, driver and trip details',
-            'Your contacts get a live-location link that opens in any browser — no app needed',
-            'Each contact shows whether the alert was really sent (in demo mode messages are logged, not sent — share the link yourself)',
-            'Contacts are told when you mark yourself safe',
+            'SOS: all saved contacts get an SMS from your own phone with your location and driver details — even without internet',
+            'Guardian Mode ON: active contacts get an SMS from your phone when your trip starts',
+            'You can also send your live trip link any time with "Share trip" (WhatsApp, SMS…)',
+            'SMS uses your own SIM — normal SMS charges of your network apply. The app shows whether each SMS was really sent',
           ].map((tip, i) => (
             <View key={i} style={styles.tipRow}>
               <View style={styles.tipNum}><Text style={{ color: C.rose, fontSize: 11, fontWeight: '700' }}>{i + 1}</Text></View>
@@ -186,6 +204,11 @@ export default function GuardianSetupScreen({ navigation }) {
           </LinearGradient>
         </TouchableOpacity>
 
+        {/* Check SMS works before an emergency */}
+        <TouchableOpacity onPress={sendTest} style={styles.testBtn} disabled={testing}>
+          <Text style={{ color: C.plum, fontWeight: '800', fontSize: 14 }}>{testing ? 'Sending…' : '📱 Send test SMS to saved contacts'}</Text>
+        </TouchableOpacity>
+
         <View style={{ height: 40 }} />
       </ScrollView>
     </View>
@@ -220,6 +243,7 @@ const styles = StyleSheet.create({
   input:         { backgroundColor: C.bg, borderRadius: 12, padding: 12, fontSize: 13, color: C.text, borderWidth: 1, borderColor: C.border },
   addBtn:        { borderRadius: 16, borderWidth: 1.5, borderColor: C.rose, borderStyle: 'dashed', padding: 16, alignItems: 'center' },
   saveBtn:       { borderRadius: 18, overflow: 'hidden' },
+  testBtn:       { borderRadius: 18, borderWidth: 1.5, borderColor: C.plum, padding: 14, alignItems: 'center', marginTop: 10, backgroundColor: '#fff' },
   saveBtnInner:  { padding: 18, alignItems: 'center' },
 });
 // NOTE: Auto-notify events (ride booked, driver assigned, ride started, completed, SOS, route deviation)

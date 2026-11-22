@@ -57,6 +57,20 @@ router.post('/:id/location', handle(async (req, res) => {
   res.json({ success: true, lastLocation: s.lastLocation });
 }));
 
+// POST /api/emergency/:id/device-sms  { results: [{ name, phone, status, reason }] }
+// What the passenger's phone reports after texting her contacts from her own SIM.
+router.post('/:id/device-sms', handle(async (req, res) => {
+  if (!validId(req.params.id)) return res.status(404).json({ success: false, message: 'Not found' });
+  const results = (Array.isArray(req.body?.results) ? req.body.results : []).slice(0, 10).map(r => ({
+    name: String(r.name || '').slice(0, 60), phone: String(r.phone || '').slice(0, 20), channel: 'device_sms',
+    status: ['sent', 'failed', 'unknown', 'unavailable'].includes(r.status) ? r.status : 'unknown',
+    detail: `From her phone${r.reason ? `: ${String(r.reason).slice(0, 80)}` : ''}`, at: new Date(),
+  }));
+  const s = await EmergencySession.findOneAndUpdate({ _id: req.params.id, raisedBy: req.user.id },
+    { $push: { contactNotifications: { $each: results } } }, { new: true });
+  if (!s) return res.status(404).json({ success: false, message: 'Not found' });
+  res.json({ success: true, recorded: results.length });
+}));
 router.put('/:id/resolve', handle(async (req, res) => {
   if (!validId(req.params.id)) return res.status(404).json({ success: false, message: 'Not found' });
   const s = await emergency.resolve({ userId: req.user.id, sessionId: req.params.id, note: req.body?.note });

@@ -82,6 +82,7 @@ export const rideAPI = {
   removeSafePoint:  (rideId, pointId) => api.delete(`/rides/${rideId}/safe-points/${pointId}`).then(r => r.data),
   requestSafePoint: (rideId, pointId) => api.post(`/rides/${rideId}/safe-points/${pointId}/request`, null, { timeout: 30000 }).then(r => r.data),
   ackSafePoint:     (rideId)          => api.put(`/rides/${rideId}/safe-point-ack`).then(r => r.data),
+  guardianSms:      (rideId, event, results) => api.post(`/rides/${rideId}/guardian-sms`, { event, results }).then(r => r.data),
   getById:   (rideId)     => api.get(`/rides/${rideId}`).then(r => r.data),
   // { as?: 'passenger', status?: 'completed'|'cancelled'|'active', page?, limit? }
   getMyRides:(params = {}) => api.get('/rides/my-rides', { params: typeof params === 'string' ? { as: params } : params }).then(r => r.data),
@@ -125,4 +126,6 @@ export const emergencyAPI = {
   active:   ()                  => api.get('/emergency/active').then(r => r.data),
   location: (id, coordinates, accuracy) => api.post(`/emergency/${id}/location`, { coordinates, accuracy }).then(r => r.data),
   resolve:  (id, note)          => api.put(`/emergency/${id}/resolve`, { note }).then(r => r.data),
+  // results of the SMS her phone sent: [{ name, phone, status, reason }]
+  deviceSms: (id, results)      => api.post(`/emergency/${id}/device-sms`, { results }).then(r => r.data),
 };

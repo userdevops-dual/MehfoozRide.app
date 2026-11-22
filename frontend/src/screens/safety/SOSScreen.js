@@ -16,6 +16,8 @@ import Geolocation from '@react-native-community/geolocation';
 import { emergencyAPI, BACKEND_URL } from '../../services/api';
 import { emitSOS } from '../../services/socket';
 import { requestLocationPermission } from '../../services/location';
+import { sendSmsToContacts, reasonText } from '../../services/sms';
+import { useAuth } from '../../context/AuthContext';
 
 const EMERGENCY_NUMBERS = [
   { number: '15',   label: 'Police',                emoji: '👮‍♀️', color: '#1565C0', priority: true },
@@ -30,6 +32,12 @@ const dial = (n) => Linking.openURL(`tel:${n}`).catch(() => Alert.alert('Could n
 const mapsLink = (c) => `https://maps.google.com/?q=${c[1]},${c[0]}`;
 const ago = (d) => { const s = Math.round((Date.now() - new Date(d).getTime()) / 1000); return s < 60 ? `${s}s ago` : `${Math.round(s / 60)} min ago`; };
 
+const PHONE_SMS = {
+  sent:        { text: 'SMS sent from your phone',       color: '#69F0AE' },
+  failed:      { text: 'SMS not sent',                   color: '#FF8A80' },
+  unknown:     { text: 'SMS sent? phone did not confirm', color: '#FFD600' },
+  unavailable: { text: 'This phone cannot send SMS',     color: '#FF8A80' },
+};
 const CONTACT_STATUS = {
   simulated:      { text: 'Demo — not actually sent', color: '#FFD600' },
   sent:           { text: 'SMS sent',                  color: '#69F0AE' },
@@ -56,6 +64,11 @@ export default function SOSScreen({ navigation, route }) {
   const [countdown, setCountdown] = useState(DIAL_COUNTDOWN);
   const [, tick] = useState(0);
 
+  const { user } = useAuth();
+  // Everyone she saved gets the SOS text (Guardian Mode on or off)
+  const contacts = (user?.guardianContacts || []).filter(c => c.phone);
+  const [deviceSms, setDeviceSms] = useState(null);   // [{ name, phone, status, reason }]
+  const smsSentRef = useRef(false);
   const sessionRef = useRef(null);
   const fixRef = useRef(null);
   const dialed = useRef(false);
@@ -140,6 +153,38 @@ export default function SOSScreen({ navigation, route }) {
     return () => clearTimeout(t);
   }, [countdown]);
 
+  // ── SMS from her own SIM: once, with her location as soon as it is known ──
+  const sendPhoneSms = async () => {
+    if (smsSentRef.current || !contacts.length) return;
+    smsSentRef.current = true;
+    const fix = fixRef.current;
+    const s = sessionRef.current;
+    const d = s?.incident?.driver;
+    // The live link only helps if contacts can open it (server reachable from the internet)
+    const publicLink = s?.liveLink?.startsWith('http') ? s.liveLink : null;
+    const msg = [
+      `🆘 EMERGENCY: ${user?.name || 'I'} pressed SOS on Mehfooz Ride.`,
+      fix ? `Location: https://maps.google.com/?q=${fix.coordinates[1].toFixed(5)},${fix.coordinates[0].toFixed(5)}` : 'Location: not available yet',
+      publicLink ? `Live: ${publicLink}` : null,
+      d?.name ? `Driver: ${d.name}, ${d.vehicle || ''} ${d.licensePlate || ''}`.trim() : null,
+      'Call me. If no answer, call Police 15.',
+    ].filter(Boolean).join('\n');
+    const results = await sendSmsToContacts(contacts, msg);
+    setDeviceSms(results);
+    if (sessionRef.current?._id) emergencyAPI.deviceSms(sessionRef.current._id, results).catch(() => {});
+  };
+  useEffect(() => {
+    if (lastFix) sendPhoneSms();                     // location known → send now
+  }, [lastFix]);
+  useEffect(() => {
+    const t = setTimeout(sendPhoneSms, 5000);        // no GPS fix yet → send without it
+    return () => clearTimeout(t);
+  }, []);
+  // Late server session → record the phone's results there too
+  useEffect(() => {
+    if (session?._id && deviceSms) emergencyAPI.deviceSms(session._id, deviceSms).catch(() => {});
+  }, [session?._id]);
+
   const fullLink = session?.liveLink?.startsWith('http') ? session.liveLink : session ? `${BACKEND_URL}${session.liveLink}` : null;
 
   const shareLink = () => {
@@ -212,20 +257,32 @@ export default function SOSScreen({ navigation, route }) {
           </TouchableOpacity>
         )}
 
-        {/* What happened for each contact — real statuses from the server */}
+        {/* What really happened for each contact: SMS from her own phone (+ the server's channel) */}
         <Text style={styles.section}>👩‍👧 EMERGENCY CONTACTS</Text>
-        {session?.contactNotifications?.length ? session.contactNotifications.slice(0, session.incident?.reporter?.emergencyContacts?.length || 5).map((c, i) => (
-          <View key={i} style={styles.row}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.name}>{c.name}{c.relation ? ` · ${c.relation}` : ''}</Text>
-              <Text style={[styles.small, { color: CONTACT_STATUS[c.status]?.color }]}>{CONTACT_STATUS[c.status]?.text || c.status}</Text>
+        {contacts.length ? contacts.map((c, i) => {
+          const phoneSms = deviceSms?.find(r => r.phone === c.phone);
+          const server = session?.contactNotifications?.find(n => n.phone === c.phone && n.channel !== 'device_sms');
+          return (
+            <View key={i} style={styles.row}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.name}>{c.name}{c.relation ? ` · ${c.relation}` : ''}</Text>
+                <Text style={[styles.small, { color: phoneSms ? PHONE_SMS[phoneSms.status]?.color : 'rgba(255,255,255,0.6)' }]}>
+                  📱 {phoneSms ? `${PHONE_SMS[phoneSms.status]?.text || phoneSms.status}${phoneSms.status !== 'sent' && phoneSms.reason ? ` — ${reasonText(phoneSms.reason)}` : ''}` : 'Sending SMS from your phone…'}
+                </Text>
+                {server?.status === 'sent' && <Text style={[styles.small, { color: CONTACT_STATUS.sent.color }]}>Server SMS sent too</Text>}
+              </View>
+              <TouchableOpacity onPress={() => dial(c.phone)} style={styles.smallBtn}><Text style={styles.smallBtnText}>📞 Call</Text></TouchableOpacity>
             </View>
-            <TouchableOpacity onPress={() => dial(c.phone)} style={styles.smallBtn}><Text style={styles.smallBtnText}>📞 Call</Text></TouchableOpacity>
-          </View>
-        )) : session ? (
+          );
+        }) : (
           <Text style={styles.warn}>No emergency contacts saved — add them in Guardian Setup so they are alerted next time.</Text>
-        ) : null}
-        {session?.demo && <Text style={styles.small}>Demo mode: messages are logged on the server instead of being sent. Use “Share live location link” to send it yourself.</Text>}
+        )}
+        {deviceSms?.some(r => r.status !== 'sent') && (
+          <TouchableOpacity onPress={() => { smsSentRef.current = false; setDeviceSms(null); sendPhoneSms(); }}>
+            <Text style={styles.link}>Try sending the SMS again</Text>
+          </TouchableOpacity>
+        )}
+        <Text style={styles.small}>SMS is sent from your own SIM (normal SMS charges apply). Your live-location link can also be shared above.</Text>
 
         {session?.police && <Text style={[styles.small, { marginTop: 10 }]}>👮 {POLICE_STATUS[session.police.status]}</Text>}
 
@@ -265,7 +322,7 @@ const styles = StyleSheet.create({
   policeBtn:  { backgroundColor: '#FFD600', borderRadius: 18, paddingVertical: 14, width: '100%', alignItems: 'center' },
   policeNum:  { color: '#000', fontSize: 20, fontWeight: '900' },
   policeSub:  { color: '#333', fontSize: 11, marginTop: 2 },
-  link:       { color: 'rgba(255,255,255,0.7)', fontSize: 12, textDecorationLine: 'underline', marginTop: 8 },
+  link:       { color: 'rgba(255,255,255,0.85)', fontSize: 12, textDecorationLine: 'underline', marginTop: 8, alignSelf: 'flex-start' },
   box:        { backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, padding: 13, width: '100%', marginTop: 14, borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)' },
   label:      { color: 'rgba(255,255,255,0.75)', fontSize: 10, fontWeight: '800', letterSpacing: 0.8, marginBottom: 6 },
   text:       { color: '#fff', fontSize: 13, lineHeight: 19 },

@@ -158,7 +158,20 @@ const DHA = [74.3436, 31.4804], LIBERTY = [74.3462, 31.5118];
     const sos = await api(ayesha, "POST", "/emergency", { coordinates: [74.344, 31.49] });
     const em = await api(admin, "GET", "/admin/emergencies?status=active");
     check("admin sees active SOS with the incident payload", (em.body.sessions || []).some(s => String(s._id) === String(sos.body.session?._id) && s.incident?.reporter?.name));
-    if (sos.body.session?._id) await api(ayesha, "PUT", `/emergency/${sos.body.session._id}/resolve`);
+    console.log("\nSMS sent from the passenger's own phone (recorded honestly)");
+    const dev = await api(ayesha, "POST", `/emergency/${sos.body.session?._id}/device-sms`, { results: [
+      { name: "Ammi", phone: "+923001234567", status: "sent" }, { name: "Abbu", phone: "+923007654321", status: "failed", reason: "no_service" }, { name: "X", phone: "1", status: "hacked" } ] });
+    check("phone SMS results recorded on the SOS session", dev.status === 200 && dev.body.recorded === 3);
+    const em2 = await api(admin, "GET", "/admin/emergencies?status=active");
+    const sess = (em2.body.sessions || []).find(s => String(s._id) === String(sos.body.session?._id));
+    const devRows = (sess?.contactNotifications || []).filter(c => c.channel === "device_sms");
+    check("admin sees per-contact phone SMS status; unknown statuses are not trusted", devRows.length === 3 && devRows[0].status === "sent" && devRows[1].status === "failed" && devRows[2].status === "unknown");
+    check("someone else cannot write to her SOS session", (await api(fatima, "POST", `/emergency/${sos.body.session?._id}/device-sms`, { results: [] })).status === 404);
+    const gs = await api(ayesha, "POST", `/rides/${rideId}/guardian-sms`, { event: "ride_started", results: [{ name: "Ammi", phone: "+923001234567", status: "sent" }] });
+    check("trip-start SMS from her phone recorded on the ride", gs.status === 200);
+    check("driver cannot record guardian SMS for the passenger", (await api(fatima, "POST", `/rides/${rideId}/guardian-sms`, { event: "ride_started", results: [] })).status === 404);
+    const rv = await api(ayesha, "GET", `/rides/${rideId}`);
+    check("passenger's ride shows the trip SMS was sent", (rv.body.ride.guardianNotifications || []).some(n => n.event === "ride_started_device_sms" && n.contacts[0]?.status === "sent"));    if (sos.body.session?._id) await api(ayesha, "PUT", `/emergency/${sos.body.session._id}/resolve`);
   } finally {
     // ── Restore the demo driver and passenger ──
     const now = await Users.findOne({ _id: fatimaDoc._id });

@@ -11,6 +11,7 @@ import OSMMap from '../../components/OSMMap';
 import LinearGradient from 'react-native-linear-gradient';
 import Geolocation from '@react-native-community/geolocation';
 import { rideAPI, fullUrl, authImage } from '../../services/api';
+import { sendSmsToContacts, reasonText } from '../../services/sms';
 import {
   onEvent, onDriverLocation, onRouteDeviation, onRideStarted, onRideFinished, onRideCancelled,
   onGuardianNotified, onOTPWarning, onFakeRideAlert, offEvent,
@@ -36,6 +37,7 @@ export default function ActiveRideScreen({ navigation, route }) {
   const [distanceTravelled, setDistanceTravelled]  = useState(0);
   const [safePoints,        setSafePoints]         = useState([]);   // marked on this ride
   const [shareLink,         setShareLink]          = useState(ride?.shareLink || null);   // Guardian Mode live link
+  const [tripSmsDone,       setTripSmsDone]        = useState(null);   // null = not checked yet; true = already texted
   const [guardianBanner,    setGuardianBanner]     = useState(null);
   // Route monitoring — the server compares the driver's GPS with the route chosen at booking
   const [offRoute,          setOffRoute]           = useState(null);   // { offRouteM } while off-route
@@ -86,6 +88,7 @@ export default function ActiveRideScreen({ navigation, route }) {
       if (r.lastProgress?.remainingKm != null) setProgress(r.lastProgress);
       setSafePoints(r.safePoints || []);
       if (r.shareLink) setShareLink(r.shareLink);
+      setTripSmsDone((r.guardianNotifications || []).some(n => n.event === 'ride_started_device_sms'));
       if (status === 'in_progress' && !startTime.current) {
         startTime.current = res.ride.startedAt ? new Date(res.ride.startedAt).getTime() : Date.now();
         setRideTime(Math.max(0, Math.round((Date.now() - startTime.current) / 1000)));
@@ -212,6 +215,32 @@ export default function ActiveRideScreen({ navigation, route }) {
 
   // SOS screen starts the emergency session on the server (location, ride,
   // driver, vehicle, route and contacts are captured there) and keeps GPS live
+  // Guardian Mode: when the trip starts, text her active guardians once from her own SIM
+  useEffect(() => {
+    if (!otpVerified || tripSmsDone !== false || !ride?._id) return;
+    const guardians = (user?.guardianContacts || []).filter(c => c.isActive && c.phone);
+    if (!guardians.length) return;
+    setTripSmsDone(true);
+    const d = driver || {};
+    const loc = myLocationRef.current;
+    const link = fullUrl(shareLink);
+    const msg = [
+      `🌸 ${user?.name || 'I'} started a Mehfooz Ride to ${ride?.dropoffLocation?.address || 'destination'}.`,
+      d.name ? `Driver: ${d.name}${d.licensePlate || d.driverDetails?.licensePlate ? `, ${d.licensePlate || d.driverDetails?.licensePlate}` : ''}`: null,
+      loc ? `Now at: https://maps.google.com/?q=${loc.latitude.toFixed(5)},${loc.longitude.toFixed(5)}` : null,
+      // only if guardians can open it (not this computer's local/emulator address)
+      link && !/\/\/(10\.0\.2\.2|localhost|127\.0\.0\.1)[:/]/.test(link) ? `Live: ${link}` : null,
+    ].filter(Boolean).join('\n');
+    sendSmsToContacts(guardians, msg).then(results => {
+      rideAPI.guardianSms(ride._id, 'ride_started', results).catch(() => {});
+      const sent = results.filter(r => r.status === 'sent').length;
+      setGuardianBanner(sent
+        ? `Your guardians (${sent}) were texted from your phone that your trip started.`
+        : `Guardian SMS not sent: ${reasonText(results[0]?.reason)}. Use "Share trip".`);
+      setTimeout(() => setGuardianBanner(null), 6000);
+    });
+  }, [otpVerified, tripSmsDone]);
+
   // Guardian Mode: send the live trip link from her own phone (WhatsApp, SMS…)
   const shareTrip = () => {
     if (!shareLink) { Alert.alert('Link not ready', 'Please try again in a moment.'); return; }

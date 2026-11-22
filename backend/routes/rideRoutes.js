@@ -5,7 +5,7 @@ const {
   bookRide, estimateRide, acceptRide, declineRide, driverArrived, verifyOTP,
   completeRide, cancelRide, submitRating,
   getMyRides, getRideById, activateSOS, getLiveFare,
-  addSafePoint, removeSafePoint, requestSafePoint, acknowledgeSafePoint, confirmPayment, liveRide,
+  addSafePoint, removeSafePoint, requestSafePoint, acknowledgeSafePoint, confirmPayment, liveRide, recordGuardianSms,
 } = require('../controllers/rideController');
 const { protect } = require('../middleware/auth');
 
@@ -27,6 +27,7 @@ router.post('/:id/verify-otp',    verifyOTP);
 router.put('/:id/complete',       completeRide);
 router.put('/:id/cancel',         cancelRide);
 router.post('/:id/rate',          submitRating);
+router.post('/:id/guardian-sms',  recordGuardianSms);  // SMS her phone sent to guardians
 router.put('/:id/payment',        confirmPayment);   // driver confirms cash collected
 router.post('/:id/sos',           activateSOS);
 router.get('/:id/live-fare',      getLiveFare);   // NEW: real-time fare
